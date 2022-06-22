@@ -1,0 +1,37 @@
+// XFITSSFIX - X-Fi Titanium Streaming Sound Fix
+// Copyright (c) 2022 Boris I. Bendovsky (bibendovsky@hotmail.com) and Contributors
+// SPDX-License-Identifier: MIT
+
+#include <xfitssfix/rc.h>
+
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION ${PROJECT_VERSION_MAJOR}, ${PROJECT_VERSION_MINOR}, ${PROJECT_VERSION_PATCH}
+PRODUCTVERSION ${PROJECT_VERSION_MAJOR}, ${PROJECT_VERSION_MINOR}, ${PROJECT_VERSION_PATCH}
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS VER_DBG
+FILEOS VOS_NT
+FILETYPE VFT_DRV
+FILESUBTYPE VFT2_DRV_SYSTEM
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		BLOCK "040904B0"
+		BEGIN
+			VALUE "Comments", L"X-Fi Titanium Streaming Sound Fix"
+			VALUE "CompanyName", L"Boris I. Bendovsky"
+			VALUE "FileDescription", L"X-Fi Titanium Streaming Sound Fix"
+			VALUE "FileVersion", L"${XFITSSFIX_VERSION}"
+			VALUE "InternalName", L"${PROJECT_NAME}"
+			VALUE "LegalCopyright", L"Copyright (c) Boris I. Bendovsky 2022"
+			VALUE "OriginalFilename", L"OpenAL32.dll"
+			VALUE "ProductName", L"XFITSSFIX"
+			VALUE "ProductVersion", L"${XFITSSFIX_VERSION}"
+		END
+	END
+
+	BLOCK "VarFileInfo"
+	BEGIN
+		VALUE "Translation", 0x0409, 1200
+	END
+END
