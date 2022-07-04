@@ -32,29 +32,24 @@ public:
 	void resolve_eax_symbols(EaxSymbols& eax_symbols) override;
 
 private:
-	LPALCGETPROCADDRESS alcGetProcAddress_{};
+	SharedLibrary* shared_library_{};
 	LPALGETPROCADDRESS alGetProcAddress_{};
 
 	[[noreturn]] static void fail_resolve_symbol(const char* symbol_name);
 
-	void initialize_alc_get_proc_address(xfitssfix::SharedLibrary* shared_library);
-	void initialize_al_get_proc_address(xfitssfix::SharedLibrary* shared_library);
+	void initialize_al_get_proc_address();
 
 	template<typename T>
-	void resolve_alc_symbol(const char* symbol_name, T& symbol)
+	void try_resolve_symbol(const char* symbol_name, T& symbol) noexcept
 	{
-		symbol = reinterpret_cast<T>(alcGetProcAddress_(nullptr, symbol_name));
-
-		if (symbol == nullptr)
-		{
-			fail_resolve_symbol(symbol_name);
-		}
+		assert(shared_library_ != nullptr);
+		symbol = reinterpret_cast<T>(shared_library_->resolve(symbol_name));
 	}
 
 	template<typename T>
-	void resolve_al_symbol(const char* symbol_name, T& symbol)
+	void resolve_symbol(const char* symbol_name, T& symbol)
 	{
-		symbol = reinterpret_cast<T>(alGetProcAddress_(symbol_name));
+		try_resolve_symbol(symbol_name, symbol);
 
 		if (symbol == nullptr)
 		{
@@ -65,7 +60,19 @@ private:
 	template<typename T>
 	void try_resolve_al_symbol(const char* symbol_name, T& symbol)
 	{
+		assert(alGetProcAddress_ != nullptr);
 		symbol = reinterpret_cast<T>(alGetProcAddress_(symbol_name));
+	}
+
+	template<typename T>
+	void resolve_al_symbol(const char* symbol_name, T& symbol)
+	{
+		try_resolve_al_symbol(symbol_name, symbol);
+
+		if (symbol == nullptr)
+		{
+			fail_resolve_symbol(symbol_name);
+		}
 	}
 };
 
@@ -78,8 +85,8 @@ AlLoaderImpl::AlLoaderImpl(xfitssfix::SharedLibrary* shared_library)
 		throw AlLoaderImplException{"Null shared library."};
 	}
 
-	initialize_alc_get_proc_address(shared_library);
-	initialize_al_get_proc_address(shared_library);
+	shared_library_ = shared_library;
+	initialize_al_get_proc_address();
 }
 
 [[noreturn]] void AlLoaderImpl::fail_resolve_symbol(const char* symbol_name)
@@ -93,25 +100,12 @@ AlLoaderImpl::AlLoaderImpl(xfitssfix::SharedLibrary* shared_library)
 	throw AlLoaderImplException{error_message.c_str()};
 }
 
-void AlLoaderImpl::initialize_alc_get_proc_address(xfitssfix::SharedLibrary* shared_library)
+void AlLoaderImpl::initialize_al_get_proc_address()
 {
-	assert(shared_library != nullptr);
-
-	alcGetProcAddress_ = reinterpret_cast<decltype(alcGetProcAddress_)>(
-		shared_library->resolve(AlSymbolsNames::alcGetProcAddress));
-
-	if (alcGetProcAddress_ == nullptr)
-	{
-		fail_resolve_symbol(AlSymbolsNames::alcGetProcAddress);
-	}
-}
-
-void AlLoaderImpl::initialize_al_get_proc_address(xfitssfix::SharedLibrary* shared_library)
-{
-	assert(shared_library != nullptr);
+	assert(shared_library_ != nullptr);
 
 	alGetProcAddress_ = reinterpret_cast<decltype(alGetProcAddress_)>(
-		shared_library->resolve(AlSymbolsNames::alGetProcAddress));
+		shared_library_->resolve(AlSymbolsNames::alGetProcAddress));
 
 	if (alGetProcAddress_ == nullptr)
 	{
@@ -121,100 +115,100 @@ void AlLoaderImpl::initialize_al_get_proc_address(xfitssfix::SharedLibrary* shar
 
 void AlLoaderImpl::resolve_al_symbols(AlSymbols& al_symbols)
 {
-	resolve_alc_symbol(AlSymbolsNames::alcCreateContext, al_symbols.alcCreateContext);
-	resolve_alc_symbol(AlSymbolsNames::alcMakeContextCurrent, al_symbols.alcMakeContextCurrent);
-	resolve_alc_symbol(AlSymbolsNames::alcProcessContext, al_symbols.alcProcessContext);
-	resolve_alc_symbol(AlSymbolsNames::alcSuspendContext, al_symbols.alcSuspendContext);
-	resolve_alc_symbol(AlSymbolsNames::alcDestroyContext, al_symbols.alcDestroyContext);
-	resolve_alc_symbol(AlSymbolsNames::alcGetCurrentContext, al_symbols.alcGetCurrentContext);
-	resolve_alc_symbol(AlSymbolsNames::alcGetContextsDevice, al_symbols.alcGetContextsDevice);
-	resolve_alc_symbol(AlSymbolsNames::alcOpenDevice, al_symbols.alcOpenDevice);
-	resolve_alc_symbol(AlSymbolsNames::alcCloseDevice, al_symbols.alcCloseDevice);
-	resolve_alc_symbol(AlSymbolsNames::alcGetError, al_symbols.alcGetError);
-	resolve_alc_symbol(AlSymbolsNames::alcIsExtensionPresent, al_symbols.alcIsExtensionPresent);
-	resolve_alc_symbol(AlSymbolsNames::alcGetProcAddress, al_symbols.alcGetProcAddress);
-	resolve_alc_symbol(AlSymbolsNames::alcGetEnumValue, al_symbols.alcGetEnumValue);
-	resolve_alc_symbol(AlSymbolsNames::alcGetString, al_symbols.alcGetString);
-	resolve_alc_symbol(AlSymbolsNames::alcGetIntegerv, al_symbols.alcGetIntegerv);
-	resolve_alc_symbol(AlSymbolsNames::alcCaptureOpenDevice, al_symbols.alcCaptureOpenDevice);
-	resolve_alc_symbol(AlSymbolsNames::alcCaptureCloseDevice, al_symbols.alcCaptureCloseDevice);
-	resolve_alc_symbol(AlSymbolsNames::alcCaptureStart, al_symbols.alcCaptureStart);
-	resolve_alc_symbol(AlSymbolsNames::alcCaptureStop, al_symbols.alcCaptureStop);
-	resolve_alc_symbol(AlSymbolsNames::alcCaptureSamples, al_symbols.alcCaptureSamples);
+	resolve_symbol(AlSymbolsNames::alcCreateContext, al_symbols.alcCreateContext);
+	resolve_symbol(AlSymbolsNames::alcMakeContextCurrent, al_symbols.alcMakeContextCurrent);
+	resolve_symbol(AlSymbolsNames::alcProcessContext, al_symbols.alcProcessContext);
+	resolve_symbol(AlSymbolsNames::alcSuspendContext, al_symbols.alcSuspendContext);
+	resolve_symbol(AlSymbolsNames::alcDestroyContext, al_symbols.alcDestroyContext);
+	resolve_symbol(AlSymbolsNames::alcGetCurrentContext, al_symbols.alcGetCurrentContext);
+	resolve_symbol(AlSymbolsNames::alcGetContextsDevice, al_symbols.alcGetContextsDevice);
+	resolve_symbol(AlSymbolsNames::alcOpenDevice, al_symbols.alcOpenDevice);
+	resolve_symbol(AlSymbolsNames::alcCloseDevice, al_symbols.alcCloseDevice);
+	resolve_symbol(AlSymbolsNames::alcGetError, al_symbols.alcGetError);
+	resolve_symbol(AlSymbolsNames::alcIsExtensionPresent, al_symbols.alcIsExtensionPresent);
+	resolve_symbol(AlSymbolsNames::alcGetProcAddress, al_symbols.alcGetProcAddress);
+	resolve_symbol(AlSymbolsNames::alcGetEnumValue, al_symbols.alcGetEnumValue);
+	resolve_symbol(AlSymbolsNames::alcGetString, al_symbols.alcGetString);
+	resolve_symbol(AlSymbolsNames::alcGetIntegerv, al_symbols.alcGetIntegerv);
+	resolve_symbol(AlSymbolsNames::alcCaptureOpenDevice, al_symbols.alcCaptureOpenDevice);
+	resolve_symbol(AlSymbolsNames::alcCaptureCloseDevice, al_symbols.alcCaptureCloseDevice);
+	resolve_symbol(AlSymbolsNames::alcCaptureStart, al_symbols.alcCaptureStart);
+	resolve_symbol(AlSymbolsNames::alcCaptureStop, al_symbols.alcCaptureStop);
+	resolve_symbol(AlSymbolsNames::alcCaptureSamples, al_symbols.alcCaptureSamples);
 
-	resolve_al_symbol(AlSymbolsNames::alDopplerFactor, al_symbols.alDopplerFactor);
-	resolve_al_symbol(AlSymbolsNames::alDopplerVelocity, al_symbols.alDopplerVelocity);
-	resolve_al_symbol(AlSymbolsNames::alSpeedOfSound, al_symbols.alSpeedOfSound);
-	resolve_al_symbol(AlSymbolsNames::alDistanceModel, al_symbols.alDistanceModel);
-	resolve_al_symbol(AlSymbolsNames::alEnable, al_symbols.alEnable);
-	resolve_al_symbol(AlSymbolsNames::alDisable, al_symbols.alDisable);
-	resolve_al_symbol(AlSymbolsNames::alIsEnabled, al_symbols.alIsEnabled);
-	resolve_al_symbol(AlSymbolsNames::alGetString, al_symbols.alGetString);
-	resolve_al_symbol(AlSymbolsNames::alGetBooleanv, al_symbols.alGetBooleanv);
-	resolve_al_symbol(AlSymbolsNames::alGetIntegerv, al_symbols.alGetIntegerv);
-	resolve_al_symbol(AlSymbolsNames::alGetFloatv, al_symbols.alGetFloatv);
-	resolve_al_symbol(AlSymbolsNames::alGetDoublev, al_symbols.alGetDoublev);
-	resolve_al_symbol(AlSymbolsNames::alGetBoolean, al_symbols.alGetBoolean);
-	resolve_al_symbol(AlSymbolsNames::alGetInteger, al_symbols.alGetInteger);
-	resolve_al_symbol(AlSymbolsNames::alGetFloat, al_symbols.alGetFloat);
-	resolve_al_symbol(AlSymbolsNames::alGetDouble, al_symbols.alGetDouble);
-	resolve_al_symbol(AlSymbolsNames::alGetError, al_symbols.alGetError);
-	resolve_al_symbol(AlSymbolsNames::alIsExtensionPresent, al_symbols.alIsExtensionPresent);
-	resolve_al_symbol(AlSymbolsNames::alGetProcAddress, al_symbols.alGetProcAddress);
-	resolve_al_symbol(AlSymbolsNames::alGetEnumValue, al_symbols.alGetEnumValue);
-	resolve_al_symbol(AlSymbolsNames::alListenerf, al_symbols.alListenerf);
-	resolve_al_symbol(AlSymbolsNames::alListener3f, al_symbols.alListener3f);
-	resolve_al_symbol(AlSymbolsNames::alListenerfv, al_symbols.alListenerfv);
-	resolve_al_symbol(AlSymbolsNames::alListeneri, al_symbols.alListeneri);
-	resolve_al_symbol(AlSymbolsNames::alListener3i, al_symbols.alListener3i);
-	resolve_al_symbol(AlSymbolsNames::alListeneriv, al_symbols.alListeneriv);
-	resolve_al_symbol(AlSymbolsNames::alGetListenerf, al_symbols.alGetListenerf);
-	resolve_al_symbol(AlSymbolsNames::alGetListener3f, al_symbols.alGetListener3f);
-	resolve_al_symbol(AlSymbolsNames::alGetListenerfv, al_symbols.alGetListenerfv);
-	resolve_al_symbol(AlSymbolsNames::alGetListeneri, al_symbols.alGetListeneri);
-	resolve_al_symbol(AlSymbolsNames::alGetListener3i, al_symbols.alGetListener3i);
-	resolve_al_symbol(AlSymbolsNames::alGetListeneriv, al_symbols.alGetListeneriv);
-	resolve_al_symbol(AlSymbolsNames::alGenSources, al_symbols.alGenSources);
-	resolve_al_symbol(AlSymbolsNames::alDeleteSources, al_symbols.alDeleteSources);
-	resolve_al_symbol(AlSymbolsNames::alIsSource, al_symbols.alIsSource);
-	resolve_al_symbol(AlSymbolsNames::alSourcef, al_symbols.alSourcef);
-	resolve_al_symbol(AlSymbolsNames::alSource3f, al_symbols.alSource3f);
-	resolve_al_symbol(AlSymbolsNames::alSourcefv, al_symbols.alSourcefv);
-	resolve_al_symbol(AlSymbolsNames::alSourcei, al_symbols.alSourcei);
-	resolve_al_symbol(AlSymbolsNames::alSource3i, al_symbols.alSource3i);
-	resolve_al_symbol(AlSymbolsNames::alSourceiv, al_symbols.alSourceiv);
-	resolve_al_symbol(AlSymbolsNames::alGetSourcef, al_symbols.alGetSourcef);
-	resolve_al_symbol(AlSymbolsNames::alGetSource3f, al_symbols.alGetSource3f);
-	resolve_al_symbol(AlSymbolsNames::alGetSourcefv, al_symbols.alGetSourcefv);
-	resolve_al_symbol(AlSymbolsNames::alGetSourcei, al_symbols.alGetSourcei);
-	resolve_al_symbol(AlSymbolsNames::alGetSource3i, al_symbols.alGetSource3i);
-	resolve_al_symbol(AlSymbolsNames::alGetSourceiv, al_symbols.alGetSourceiv);
-	resolve_al_symbol(AlSymbolsNames::alSourcePlayv, al_symbols.alSourcePlayv);
-	resolve_al_symbol(AlSymbolsNames::alSourceStopv, al_symbols.alSourceStopv);
-	resolve_al_symbol(AlSymbolsNames::alSourceRewindv, al_symbols.alSourceRewindv);
-	resolve_al_symbol(AlSymbolsNames::alSourcePausev, al_symbols.alSourcePausev);
-	resolve_al_symbol(AlSymbolsNames::alSourcePlay, al_symbols.alSourcePlay);
-	resolve_al_symbol(AlSymbolsNames::alSourceStop, al_symbols.alSourceStop);
-	resolve_al_symbol(AlSymbolsNames::alSourceRewind, al_symbols.alSourceRewind);
-	resolve_al_symbol(AlSymbolsNames::alSourcePause, al_symbols.alSourcePause);
-	resolve_al_symbol(AlSymbolsNames::alSourceQueueBuffers, al_symbols.alSourceQueueBuffers);
-	resolve_al_symbol(AlSymbolsNames::alSourceUnqueueBuffers, al_symbols.alSourceUnqueueBuffers);
-	resolve_al_symbol(AlSymbolsNames::alGenBuffers, al_symbols.alGenBuffers);
-	resolve_al_symbol(AlSymbolsNames::alDeleteBuffers, al_symbols.alDeleteBuffers);
-	resolve_al_symbol(AlSymbolsNames::alIsBuffer, al_symbols.alIsBuffer);
-	resolve_al_symbol(AlSymbolsNames::alBufferData, al_symbols.alBufferData);
-	try_resolve_al_symbol(AlSymbolsNames::alBufferf, al_symbols.alBufferf);
-	try_resolve_al_symbol(AlSymbolsNames::alBuffer3f, al_symbols.alBuffer3f);
-	try_resolve_al_symbol(AlSymbolsNames::alBufferfv, al_symbols.alBufferfv);
-	resolve_al_symbol(AlSymbolsNames::alBufferi, al_symbols.alBufferi);
-	try_resolve_al_symbol(AlSymbolsNames::alBuffer3i, al_symbols.alBuffer3i);
-	try_resolve_al_symbol(AlSymbolsNames::alBufferiv, al_symbols.alBufferiv);
-	resolve_al_symbol(AlSymbolsNames::alGetBufferf, al_symbols.alGetBufferf);
-	try_resolve_al_symbol(AlSymbolsNames::alGetBuffer3f, al_symbols.alGetBuffer3f);
-	try_resolve_al_symbol(AlSymbolsNames::alGetBufferfv, al_symbols.alGetBufferfv);
-	resolve_al_symbol(AlSymbolsNames::alGetBufferi, al_symbols.alGetBufferi);
-	try_resolve_al_symbol(AlSymbolsNames::alGetBuffer3i, al_symbols.alGetBuffer3i);
-	try_resolve_al_symbol(AlSymbolsNames::alGetBufferiv, al_symbols.alGetBufferiv);
+	resolve_symbol(AlSymbolsNames::alDopplerFactor, al_symbols.alDopplerFactor);
+	resolve_symbol(AlSymbolsNames::alDopplerVelocity, al_symbols.alDopplerVelocity);
+	resolve_symbol(AlSymbolsNames::alSpeedOfSound, al_symbols.alSpeedOfSound);
+	resolve_symbol(AlSymbolsNames::alDistanceModel, al_symbols.alDistanceModel);
+	resolve_symbol(AlSymbolsNames::alEnable, al_symbols.alEnable);
+	resolve_symbol(AlSymbolsNames::alDisable, al_symbols.alDisable);
+	resolve_symbol(AlSymbolsNames::alIsEnabled, al_symbols.alIsEnabled);
+	resolve_symbol(AlSymbolsNames::alGetString, al_symbols.alGetString);
+	resolve_symbol(AlSymbolsNames::alGetBooleanv, al_symbols.alGetBooleanv);
+	resolve_symbol(AlSymbolsNames::alGetIntegerv, al_symbols.alGetIntegerv);
+	resolve_symbol(AlSymbolsNames::alGetFloatv, al_symbols.alGetFloatv);
+	resolve_symbol(AlSymbolsNames::alGetDoublev, al_symbols.alGetDoublev);
+	resolve_symbol(AlSymbolsNames::alGetBoolean, al_symbols.alGetBoolean);
+	resolve_symbol(AlSymbolsNames::alGetInteger, al_symbols.alGetInteger);
+	resolve_symbol(AlSymbolsNames::alGetFloat, al_symbols.alGetFloat);
+	resolve_symbol(AlSymbolsNames::alGetDouble, al_symbols.alGetDouble);
+	resolve_symbol(AlSymbolsNames::alGetError, al_symbols.alGetError);
+	resolve_symbol(AlSymbolsNames::alIsExtensionPresent, al_symbols.alIsExtensionPresent);
+	resolve_symbol(AlSymbolsNames::alGetProcAddress, al_symbols.alGetProcAddress);
+	resolve_symbol(AlSymbolsNames::alGetEnumValue, al_symbols.alGetEnumValue);
+	resolve_symbol(AlSymbolsNames::alListenerf, al_symbols.alListenerf);
+	resolve_symbol(AlSymbolsNames::alListener3f, al_symbols.alListener3f);
+	resolve_symbol(AlSymbolsNames::alListenerfv, al_symbols.alListenerfv);
+	resolve_symbol(AlSymbolsNames::alListeneri, al_symbols.alListeneri);
+	resolve_symbol(AlSymbolsNames::alListener3i, al_symbols.alListener3i);
+	resolve_symbol(AlSymbolsNames::alListeneriv, al_symbols.alListeneriv);
+	resolve_symbol(AlSymbolsNames::alGetListenerf, al_symbols.alGetListenerf);
+	resolve_symbol(AlSymbolsNames::alGetListener3f, al_symbols.alGetListener3f);
+	resolve_symbol(AlSymbolsNames::alGetListenerfv, al_symbols.alGetListenerfv);
+	resolve_symbol(AlSymbolsNames::alGetListeneri, al_symbols.alGetListeneri);
+	resolve_symbol(AlSymbolsNames::alGetListener3i, al_symbols.alGetListener3i);
+	resolve_symbol(AlSymbolsNames::alGetListeneriv, al_symbols.alGetListeneriv);
+	resolve_symbol(AlSymbolsNames::alGenSources, al_symbols.alGenSources);
+	resolve_symbol(AlSymbolsNames::alDeleteSources, al_symbols.alDeleteSources);
+	resolve_symbol(AlSymbolsNames::alIsSource, al_symbols.alIsSource);
+	resolve_symbol(AlSymbolsNames::alSourcef, al_symbols.alSourcef);
+	resolve_symbol(AlSymbolsNames::alSource3f, al_symbols.alSource3f);
+	resolve_symbol(AlSymbolsNames::alSourcefv, al_symbols.alSourcefv);
+	resolve_symbol(AlSymbolsNames::alSourcei, al_symbols.alSourcei);
+	resolve_symbol(AlSymbolsNames::alSource3i, al_symbols.alSource3i);
+	resolve_symbol(AlSymbolsNames::alSourceiv, al_symbols.alSourceiv);
+	resolve_symbol(AlSymbolsNames::alGetSourcef, al_symbols.alGetSourcef);
+	resolve_symbol(AlSymbolsNames::alGetSource3f, al_symbols.alGetSource3f);
+	resolve_symbol(AlSymbolsNames::alGetSourcefv, al_symbols.alGetSourcefv);
+	resolve_symbol(AlSymbolsNames::alGetSourcei, al_symbols.alGetSourcei);
+	resolve_symbol(AlSymbolsNames::alGetSource3i, al_symbols.alGetSource3i);
+	resolve_symbol(AlSymbolsNames::alGetSourceiv, al_symbols.alGetSourceiv);
+	resolve_symbol(AlSymbolsNames::alSourcePlayv, al_symbols.alSourcePlayv);
+	resolve_symbol(AlSymbolsNames::alSourceStopv, al_symbols.alSourceStopv);
+	resolve_symbol(AlSymbolsNames::alSourceRewindv, al_symbols.alSourceRewindv);
+	resolve_symbol(AlSymbolsNames::alSourcePausev, al_symbols.alSourcePausev);
+	resolve_symbol(AlSymbolsNames::alSourcePlay, al_symbols.alSourcePlay);
+	resolve_symbol(AlSymbolsNames::alSourceStop, al_symbols.alSourceStop);
+	resolve_symbol(AlSymbolsNames::alSourceRewind, al_symbols.alSourceRewind);
+	resolve_symbol(AlSymbolsNames::alSourcePause, al_symbols.alSourcePause);
+	resolve_symbol(AlSymbolsNames::alSourceQueueBuffers, al_symbols.alSourceQueueBuffers);
+	resolve_symbol(AlSymbolsNames::alSourceUnqueueBuffers, al_symbols.alSourceUnqueueBuffers);
+	resolve_symbol(AlSymbolsNames::alGenBuffers, al_symbols.alGenBuffers);
+	resolve_symbol(AlSymbolsNames::alDeleteBuffers, al_symbols.alDeleteBuffers);
+	resolve_symbol(AlSymbolsNames::alIsBuffer, al_symbols.alIsBuffer);
+	resolve_symbol(AlSymbolsNames::alBufferData, al_symbols.alBufferData);
+	try_resolve_symbol(AlSymbolsNames::alBufferf, al_symbols.alBufferf);
+	try_resolve_symbol(AlSymbolsNames::alBuffer3f, al_symbols.alBuffer3f);
+	try_resolve_symbol(AlSymbolsNames::alBufferfv, al_symbols.alBufferfv);
+	resolve_symbol(AlSymbolsNames::alBufferi, al_symbols.alBufferi);
+	try_resolve_symbol(AlSymbolsNames::alBuffer3i, al_symbols.alBuffer3i);
+	try_resolve_symbol(AlSymbolsNames::alBufferiv, al_symbols.alBufferiv);
+	resolve_symbol(AlSymbolsNames::alGetBufferf, al_symbols.alGetBufferf);
+	try_resolve_symbol(AlSymbolsNames::alGetBuffer3f, al_symbols.alGetBuffer3f);
+	try_resolve_symbol(AlSymbolsNames::alGetBufferfv, al_symbols.alGetBufferfv);
+	resolve_symbol(AlSymbolsNames::alGetBufferi, al_symbols.alGetBufferi);
+	try_resolve_symbol(AlSymbolsNames::alGetBuffer3i, al_symbols.alGetBuffer3i);
+	try_resolve_symbol(AlSymbolsNames::alGetBufferiv, al_symbols.alGetBufferiv);
 }
 
 void AlLoaderImpl::resolve_efx_symbols(EfxSymbols& efx_symbols)
