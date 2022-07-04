@@ -954,6 +954,21 @@ try
 	string_buffer_ += to_string_hex(al_device);
 	logger_.info(string_buffer_.c_str());
 
+	if (effective_device_name == nullptr)
+	{
+		fail("Null effective name.");
+	}
+
+#ifdef NDEBUG
+	const auto effective_device_name_sv = std::string_view{effective_device_name};
+	constexpr auto reference_device_name_sv = std::string_view{"SB X-Fi Audio [0001]"};
+
+	if (effective_device_name_sv != reference_device_name_sv)
+	{
+		fail("Expected X-Fi Titanium device name.");
+	}
+#endif
+
 	devices_.emplace_back(Device{});
 	auto& device = devices_.back();
 	device.al_device = al_device;
