@@ -2853,9 +2853,11 @@ void AlApiImpl::initialize_al_driver()
 	constexpr const char* const known_names[] =
 	{
 		"ct_oal.dll",
+#ifndef NDEBUG
 		"sens_oal.dll",
 		"soft_oal.dll",
 		"wrap_oal.dll",
+#endif
 	};
 
 	for (const auto known_name : known_names)
