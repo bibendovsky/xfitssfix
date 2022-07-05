@@ -60,7 +60,7 @@ constexpr int to_string_max_length() noexcept
 
 
 template<typename T>
-inline void to_string_generic(T value, const char* format_string, String& string)
+inline String& to_string_generic(T value, const char* format_string, String& string)
 {
 	constexpr auto max_length = to_string_max_length<T>();
 	string.resize(max_length);
@@ -82,35 +82,41 @@ inline void to_string_generic(T value, const char* format_string, String& string
 	}
 
 	string.resize(static_cast<String::size_type>(data_end - data));
+	return string;
 }
 
 } // namespace
 
 // --------------------------------------------------------------------------
 
-void to_string(int value, String& string)
+String& to_string(int value, String& string)
 {
-	to_string_generic(value, "%d", string);
+	return to_string_generic(value, "%d", string);
 }
 
-void to_string(unsigned int value, String& string)
+String& to_string(unsigned int value, String& string)
 {
-	to_string_generic(value, "%u", string);
+	return to_string_generic(value, "%u", string);
 }
 
-void to_string(long long value, String& string)
+String& to_string(long long value, String& string)
 {
-	to_string_generic(value, "%lld", string);
+	return to_string_generic(value, "%lld", string);
 }
 
-void to_string(unsigned long long value, String& string)
+String& to_string(unsigned long long value, String& string)
 {
-	to_string_generic(value, "%llu", string);
+	return to_string_generic(value, "%llu", string);
 }
 
-void to_string(float value, String& string)
+String& to_string(float value, String& string)
 {
-	to_string_generic(value, "%f", string);
+	return to_string_generic(value, "%f", string);
+}
+
+String& to_string_hex(const void* value, String& string)
+{
+	return to_string_generic(value, "%p", string);
 }
 
 // --------------------------------------------------------------------------
@@ -119,7 +125,7 @@ String to_string(int value)
 {
 	static_assert(sizeof(decltype(value)) == 4);
 	auto string = String{};
-	to_string_generic(value, "%d", string);
+	to_string(value, string);
 	return string;
 }
 
@@ -127,7 +133,7 @@ String to_string(unsigned int value)
 {
 	static_assert(sizeof(decltype(value)) == 4);
 	auto string = String{};
-	to_string_generic(value, "%u", string);
+	to_string(value, string);
 	return string;
 }
 
@@ -147,7 +153,7 @@ String to_string(long long value)
 {
 	static_assert(sizeof(decltype(value)) == 8);
 	auto string = String{};
-	to_string_generic(value, "%lld", string);
+	to_string(value, string);
 	return string;
 }
 
@@ -155,7 +161,7 @@ String to_string(unsigned long long value)
 {
 	static_assert(sizeof(decltype(value)) == 8);
 	auto string = String{};
-	to_string_generic(value, "%llu", string);
+	to_string(value, string);
 	return string;
 }
 
@@ -163,14 +169,14 @@ String to_string(float value)
 {
 	static_assert(sizeof(float) == 4);
 	auto string = String{};
-	to_string_generic(value, "%f", string);
+	to_string(value, string);
 	return string;
 }
 
 String to_string_hex(const void* value)
 {
 	auto string = String{};
-	to_string_generic(value, "%p", string);
+	to_string_hex(value, string);
 	return string;
 }
 

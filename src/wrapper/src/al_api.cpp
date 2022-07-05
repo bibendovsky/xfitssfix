@@ -377,20 +377,25 @@ private:
 	using ClockTimePoint = Clock::time_point;
 
 	template<typename T>
-	static String ptr_to_str(T* ptr)
+	static String& ptr_to_str(T* ptr, String& string)
 	{
-		return ptr != nullptr ? to_string_hex(ptr) : null_string;
+		if (ptr != nullptr)
+		{
+			return to_string_hex(ptr, string);
+		}
+
+		string = null_string;
+		return string;
 	}
 
 	using AlSymbolMap = std::unordered_map<std::string_view, void*>;
 
 	struct Buffer
 	{
-		bool is_valid_format;
-		int frame_size;
 		int rate;
-		int size;
-		int size_ms;
+		int frame_size;
+		int frame_count;
+		int duration_ms;
 	};
 
 	using BufferMap = std::unordered_map<ALuint, Buffer>;
@@ -416,35 +421,34 @@ private:
 
 		void push(Buffer* buffer)
 		{
-			queue_.resize(get_size() + 1);
-			std::uninitialized_copy_n(queue_.cbegin(), get_size() - 1, queue_.begin() + 1);
-			queue_.front() = buffer;
+			queue_.emplace_back(buffer);
 		}
 
 		void pop(int count)
 		{
 			assert(count >= 0);
-			const auto size = get_size();
-
-			if (size < count)
-			{
-				fail("Not enough buffers to pop.");
-			}
 
 			if (count == 0)
 			{
 				return;
 			}
 
-			queue_.resize(size - count);
+			if (count > get_size())
+			{
+				fail("Not enough buffers to pop.");
+			}
+
+			const auto begin_it = queue_.begin();
+			const auto end_it = begin_it + count;
+			queue_.erase(begin_it, end_it);
 		}
 
 		void clear()
 		{
-			queue_.resize(0);
+			queue_.clear();
 		}
 
-		Buffer* operator[](int index) const
+		Buffer* get(int index) const
 		{
 			if (index < 0 || index >= get_size())
 			{
@@ -452,6 +456,26 @@ private:
 			}
 
 			return queue_[index];
+		}
+
+		Buffer* get_front() const
+		{
+			return get(0);
+		}
+
+		Buffer* operator[](int index) const
+		{
+			return get(index);
+		}
+
+		Buffer* const* begin() const noexcept
+		{
+			return queue_.data();
+		}
+
+		Buffer* const* end() const noexcept
+		{
+			return begin() + get_size();
 		}
 
 	private:
@@ -476,11 +500,18 @@ private:
 
 	struct Source
 	{
-		ALuint id;
-		bool is_streaming;
-		ClockTimePoint processed_time_point;
-		int processed_count;
-		BufferQueue queue;
+		ALuint id{AL_NONE};
+		bool is_playing{};
+		bool is_looping{};
+		double r_rate{0.0};
+		double r_pitch_1000{1'000.0};
+		ClockTimePoint monitoring_time_point{};
+		BufferQueue queue{};
+
+		constexpr auto is_monitorable() const noexcept
+		{
+			return is_playing && !is_looping;
+		}
 	};
 
 	using SourceMap = std::unordered_map<ALuint, Source>;
@@ -491,7 +522,7 @@ private:
 	struct ContextThread
 	{
 		bool quit_flag{};
-		AlApiImpl* al_api;
+		AlApiImpl* al_api{};
 		Context* context{};
 		ThreadUPtr thread{};
 	};
@@ -545,7 +576,8 @@ private:
 	Devices devices_{};
 	Context* current_context_{};
 
-	String string_buffer_{};
+	String string_buffer_1_{};
+	String string_buffer_2_{};
 
 	[[noreturn]] static void fail(const char* message);
 
@@ -563,6 +595,12 @@ private:
 
 		al_symbol_map.emplace(symbol_name, reinterpret_cast<void*>(global_symbol));
 	}
+
+	static const char* get_source_param_string(ALenum param) noexcept;
+	static String& source_param_to_string(ALenum param, String& string);
+
+	static const char* get_buffer_format_string(ALenum param) noexcept;
+	static String& buffer_format_to_string(ALenum param, String& string);
 
 	void initialize_al_driver();
 	void initialize_al_symbols();
@@ -603,9 +641,10 @@ private:
 	void mark_source_as_monitoring(Context& context, Source& source);
 	void mark_source_as_non_monitoring(Context& context, Source& source);
 
-	void set_source_processed_time_point(Source& source, int processed_count, ClockTimePoint base_time_point);
+	void update_source_monitoring(Source& source);
 
 	void handle_al_source_ix(ALuint sid, ALenum param, const ALint* values);
+	void handle_al_source_fx(ALuint sid, ALenum param, const ALfloat* values);
 	void handle_al_get_source_ix(ALuint sid, ALenum param, ALint* values);
 	void handle_al_source_state(ALsizei ns, const ALuint *sids, ALenum state);
 
@@ -615,7 +654,8 @@ private:
 		MonitoringSources* monitoring_sources;
 		Source* source;
 		ClockTimePoint time_point;
-		String* string_buffer;
+		String* string_buffer_1;
+		String* string_buffer_2;
 	};
 
 	void handle_monitoring_source(MonitoringContext& monitoring_context);
@@ -656,11 +696,11 @@ AlApiImpl::~AlApiImpl()
 {
 	logger_.info("");
 
-	string_buffer_.clear();
-	string_buffer_ += "Finalizing process ";
-	string_buffer_ += to_string(process_id_);
-	string_buffer_ += '.';
-	logger_.info(string_buffer_.c_str());
+	string_buffer_1_.clear();
+	string_buffer_1_ += "Finalizing process ";
+	string_buffer_1_ += to_string(process_id_, string_buffer_2_);
+	string_buffer_1_ += '.';
+	logger_.info(string_buffer_1_.c_str());
 
 	logger_.info(">>>>>>>>>>>>>>>>>>>>>>>>");
 	logger_.info("");
@@ -690,11 +730,11 @@ try
 	logger_.info("");
 	logger_.info(al_api::Strings::equals_line_16);
 
-	string_buffer_.clear();
-	string_buffer_ += "Create a context on device ";
-	string_buffer_ += ptr_to_str(device);
-	string_buffer_ += '.';
-	logger_.info(string_buffer_.c_str());
+	string_buffer_1_.clear();
+	string_buffer_1_ += "Create a context on device ";
+	string_buffer_1_ += ptr_to_str(device, string_buffer_2_);
+	string_buffer_1_ += '.';
+	logger_.info(string_buffer_1_.c_str());
 
 	const auto al_context = al_symbols_.alcCreateContext(device, attrlist);
 
@@ -724,20 +764,20 @@ try
 	logger_.info("");
 	logger_.info(al_api::Strings::equals_line_16);
 
-	string_buffer_.clear();
+	string_buffer_1_.clear();
 
 	if (context != nullptr)
 	{
-		string_buffer_ += "Make context ";
-		string_buffer_ += to_string_hex(context);
-		string_buffer_ += " current.";
+		string_buffer_1_ += "Make context ";
+		string_buffer_1_ += to_string_hex(context, string_buffer_2_);
+		string_buffer_1_ += " current.";
 	}
 	else
 	{
-		string_buffer_ += "Unset the current context.";
+		string_buffer_1_ += "Unset the current context.";
 	}
 
-	logger_.info(string_buffer_.c_str());
+	logger_.info(string_buffer_1_.c_str());
 
 	const auto alc_result = al_symbols_.alcMakeContextCurrent(context);
 
@@ -782,10 +822,10 @@ try
 			context_thread->thread = make_thread(thread_func_proxy, context_thread.get());
 			our_context.context_thread.swap(context_thread);
 
-			string_buffer_.clear();
-			string_buffer_ += "Thread instance: ";
-			string_buffer_ += to_string_hex(our_context.context_thread->thread.get());
-			logger_.info(string_buffer_.c_str());
+			string_buffer_1_.clear();
+			string_buffer_1_ += "Thread instance: ";
+			string_buffer_1_ += to_string_hex(our_context.context_thread->thread.get(), string_buffer_2_);
+			logger_.info(string_buffer_1_.c_str());
 		}
 	}
 	else
@@ -834,11 +874,11 @@ try
 		logger_.info("");
 		logger_.info(al_api::Strings::equals_line_16);
 
-		string_buffer_.clear();
-		string_buffer_ += "Destroy context ";
-		string_buffer_ += ptr_to_str(context);
-		string_buffer_ += '.';
-		logger_.info(string_buffer_.c_str());
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Destroy context ";
+		string_buffer_1_ += ptr_to_str(context, string_buffer_2_);
+		string_buffer_1_ += '.';
+		logger_.info(string_buffer_1_.c_str());
 
 		if (context != nullptr)
 		{
@@ -923,11 +963,11 @@ try
 
 	if (devicename != nullptr)
 	{
-		string_buffer_.clear();
-		string_buffer_ += "Open device \"";
-		string_buffer_ += devicename;
-		string_buffer_ += "\".";
-		logger_.info(string_buffer_.c_str());
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Open device \"";
+		string_buffer_1_ += devicename;
+		string_buffer_1_ += "\".";
+		logger_.info(string_buffer_1_.c_str());
 	}
 	else
 	{
@@ -943,16 +983,16 @@ try
 	}
 
 	const auto effective_device_name = al_symbols_.alcGetString(al_device, ALC_DEVICE_SPECIFIER);
-	string_buffer_.clear();
-	string_buffer_ += "Effective name: \"";
-	string_buffer_ += (effective_device_name != nullptr ? effective_device_name : null_string);
-	string_buffer_ += "\".";
-	logger_.info(string_buffer_.c_str());
+	string_buffer_1_.clear();
+	string_buffer_1_ += "Effective name: \"";
+	string_buffer_1_ += (effective_device_name != nullptr ? effective_device_name : null_string);
+	string_buffer_1_ += "\".";
+	logger_.info(string_buffer_1_.c_str());
 
-	string_buffer_.clear();
-	string_buffer_ += "Instance: ";
-	string_buffer_ += to_string_hex(al_device);
-	logger_.info(string_buffer_.c_str());
+	string_buffer_1_.clear();
+	string_buffer_1_ += "Instance: ";
+	string_buffer_1_ += to_string_hex(al_device, string_buffer_2_);
+	logger_.info(string_buffer_1_.c_str());
 
 	if (effective_device_name == nullptr)
 	{
@@ -992,11 +1032,11 @@ try
 		logger_.info("");
 		logger_.info(al_api::Strings::equals_line_16);
 
-		string_buffer_.clear();
-		string_buffer_ += "Close device ";
-		string_buffer_ += ptr_to_str(device);
-		string_buffer_ += '.';
-		logger_.info(string_buffer_.c_str());
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Close device ";
+		string_buffer_1_ += ptr_to_str(device, string_buffer_2_);
+		string_buffer_1_ += '.';
+		logger_.info(string_buffer_1_.c_str());
 
 		if (device != nullptr)
 		{
@@ -1456,11 +1496,11 @@ try
 		}
 	}
 
-	string_buffer_.clear();
-	string_buffer_ += "Symbol \"";
-	string_buffer_ += fname;
-	string_buffer_ += "\" not found.";
-	fail(string_buffer_.c_str());
+	string_buffer_1_.clear();
+	string_buffer_1_ += "Symbol \"";
+	string_buffer_1_ += fname;
+	string_buffer_1_ += "\" not found.";
+	fail(string_buffer_1_.c_str());
 }
 catch (...)
 {
@@ -1619,13 +1659,15 @@ void AL_APIENTRY AlApiImpl::alGenSources(ALsizei n, ALuint* sources) noexcept
 try
 {
 	const auto lock = get_lock();
-	string_buffer_.clear();
-	string_buffer_ += "Generating ";
-	string_buffer_ += to_string(n);
-	string_buffer_ += " source(s) by ";
-	string_buffer_ += ptr_to_str(sources);
-	string_buffer_ += '.';
-	logger_.info(string_buffer_.c_str());
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alGenSources;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(n, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
 
 	al_symbols_.alGenSources(n, sources);
 
@@ -1640,10 +1682,10 @@ try
 	{
 		if (al_symbols_.alIsSource(source) == AL_FALSE)
 		{
-			string_buffer_.clear();
-			string_buffer_ += "Invalid source ID: ";
-			string_buffer_ += to_string(source);
-			fail(string_buffer_.c_str());
+			string_buffer_1_.clear();
+			string_buffer_1_ += "Invalid source ID: ";
+			string_buffer_1_ += to_string(source, string_buffer_2_);
+			fail(string_buffer_1_.c_str());
 		}
 	}
 
@@ -1665,13 +1707,15 @@ void AL_APIENTRY AlApiImpl::alDeleteSources(ALsizei n, const ALuint* sources) no
 try
 {
 	const auto lock = get_lock();
-	string_buffer_.clear();
-	string_buffer_ += "Deleting ";
-	string_buffer_ += to_string(n);
-	string_buffer_ += " source(s) at ";
-	string_buffer_ += ptr_to_str(sources);
-	string_buffer_ += '.';
-	logger_.info(string_buffer_.c_str());
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alDeleteSources;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(n, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
 
 	al_symbols_.alDeleteSources(n, sources);
 
@@ -1718,7 +1762,21 @@ void AL_APIENTRY AlApiImpl::alSourcef(ALuint source, ALenum param, ALfloat value
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourcef;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += to_string(value, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
+	al_symbols_.alGetError();
 	al_symbols_.alSourcef(source, param, value);
+	handle_al_source_fx(source, param, &value);
 }
 catch (...)
 {
@@ -1740,7 +1798,21 @@ void AL_APIENTRY AlApiImpl::alSourcefv(ALuint source, ALenum param, const ALfloa
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourcefv;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
+	al_symbols_.alGetError();
 	al_symbols_.alSourcefv(source, param, values);
+	handle_al_source_fx(source, param, values);
 }
 catch (...)
 {
@@ -1751,6 +1823,18 @@ void AL_APIENTRY AlApiImpl::alSourcei(ALuint source, ALenum param, ALint value) 
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourcei;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += to_string(value, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourcei(source, param, value);
 	handle_al_source_ix(source, param, &value);
@@ -1775,6 +1859,18 @@ void AL_APIENTRY AlApiImpl::alSourceiv(ALuint source, ALenum param, const ALint*
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourceiv;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourceiv(source, param, values);
 	handle_al_source_ix(source, param, values);
@@ -1821,6 +1917,18 @@ void AL_APIENTRY AlApiImpl::alGetSourcei(ALuint source, ALenum param, ALint* val
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alGetSourcei;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(value, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alGetSourcei(source, param, value);
 	handle_al_get_source_ix(source, param, value);
@@ -1845,6 +1953,18 @@ void AL_APIENTRY AlApiImpl::alGetSourceiv(ALuint source, ALenum param, ALint* va
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alGetSourceiv;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alGetSourceiv(source, param, values);
 	handle_al_get_source_ix(source, param, values);
@@ -1858,6 +1978,16 @@ void AL_APIENTRY AlApiImpl::alSourcePlayv(ALsizei n, const ALuint* sources) noex
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourcePlayv;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(n, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourcePlayv(n, sources);
 	handle_al_source_state(n, sources, AL_PLAYING);
@@ -1871,6 +2001,16 @@ void AL_APIENTRY AlApiImpl::alSourceStopv(ALsizei n, const ALuint* sources) noex
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourceStopv;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(n, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourceStopv(n, sources);
 	handle_al_source_state(n, sources, AL_STOPPED);
@@ -1884,6 +2024,16 @@ void AL_APIENTRY AlApiImpl::alSourceRewindv(ALsizei n, const ALuint* sources) no
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourceRewindv;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(n, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourceRewindv(n, sources);
 	handle_al_source_state(n, sources, AL_INITIAL);
@@ -1897,6 +2047,16 @@ void AL_APIENTRY AlApiImpl::alSourcePausev(ALsizei n, const ALuint* sources) noe
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourcePausev;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(n, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourcePausev(n, sources);
 	handle_al_source_state(n, sources, AL_PAUSED);
@@ -1910,6 +2070,14 @@ void AL_APIENTRY AlApiImpl::alSourcePlay(ALuint source) noexcept
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourcePlay;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourcePlay(source);
 	handle_al_source_state(1, &source, AL_PLAYING);
@@ -1923,6 +2091,14 @@ void AL_APIENTRY AlApiImpl::alSourceStop(ALuint source) noexcept
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourceStop;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourceStop(source);
 	handle_al_source_state(1, &source, AL_STOPPED);
@@ -1936,6 +2112,14 @@ void AL_APIENTRY AlApiImpl::alSourceRewind(ALuint source) noexcept
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourceRewind;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourceRewind(source);
 	handle_al_source_state(1, &source, AL_INITIAL);
@@ -1949,6 +2133,14 @@ void AL_APIENTRY AlApiImpl::alSourcePause(ALuint source) noexcept
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourcePause;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourcePause(source);
 	handle_al_source_state(1, &source, AL_PAUSED);
@@ -1962,20 +2154,23 @@ void AL_APIENTRY AlApiImpl::alSourceQueueBuffers(ALuint source, ALsizei nb, cons
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourceQueueBuffers;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += to_string(nb, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
+	string_buffer_1_ += ')';
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourceQueueBuffers(source, nb, buffers);
 
 	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		string_buffer_.clear();
-		string_buffer_ += "Failed to queue ";
-		string_buffer_ += to_string(nb);
-		string_buffer_ += " buffer(s) from ";
-		string_buffer_ += ptr_to_str(buffers);
-		string_buffer_ += " on a source ";
-		string_buffer_ += to_string(source);
-		string_buffer_ += '.';
-		fail(string_buffer_.c_str());
+		fail("Failed to queue the buffers.");
 	}
 
 	if (nb <= 0 || buffers == nullptr)
@@ -1985,14 +2180,22 @@ try
 
 	auto& our_source = get_source(source);
 	auto& queue = our_source.queue;
-	our_source.is_streaming = true;
+	const auto is_queue_was_empty = queue.is_empty();
 
 	auto buffers_span = make_span(buffers, nb);
+
 	for (const auto buffer : buffers_span)
 	{
 		auto& our_buffer = get_buffer(buffer);
 		queue.push(&our_buffer);
 	}
+
+	if (is_queue_was_empty)
+	{
+		our_source.r_rate = 1.0 / queue.get_front()->rate;
+	}
+
+	update_source_monitoring(our_source);
 }
 catch (...)
 {
@@ -2003,20 +2206,23 @@ void AL_APIENTRY AlApiImpl::alSourceUnqueueBuffers(ALuint source, ALsizei nb, AL
 try
 {
 	const auto lock = get_lock();
+
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alSourceUnqueueBuffers;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(source, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += to_string(nb, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
+	string_buffer_1_ += ')';
+
 	al_symbols_.alGetError();
 	al_symbols_.alSourceUnqueueBuffers(source, nb, buffers);
 
 	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		string_buffer_.clear();
-		string_buffer_ += "Failed to unqueue ";
-		string_buffer_ += to_string(nb);
-		string_buffer_ += " buffer(s) to ";
-		string_buffer_ += ptr_to_str(buffers);
-		string_buffer_ += " on a source ";
-		string_buffer_ += to_string(source);
-		string_buffer_ += '.';
-		fail(string_buffer_.c_str());
+		fail("Failed to unqueue the buffers.");
 	}
 
 	if (nb <= 0 || buffers == nullptr)
@@ -2036,14 +2242,17 @@ void AL_APIENTRY AlApiImpl::alGenBuffers(ALsizei n, ALuint* buffers) noexcept
 try
 {
 	const auto lock = get_lock();
-	string_buffer_.clear();
-	string_buffer_ += "Generating ";
-	string_buffer_ += to_string(n);
-	string_buffer_ += " buffer(s) by ";
-	string_buffer_ += ptr_to_str(buffers);
-	string_buffer_ += '.';
-	logger_.info(string_buffer_.c_str());
 
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alGenBuffers;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(n, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
+	al_symbols_.alGetError();
 	al_symbols_.alGenBuffers(n, buffers);
 
 	if (n <= 0 || buffers == nullptr)
@@ -2057,10 +2266,10 @@ try
 	{
 		if (buffer == AL_NONE || al_symbols_.alIsBuffer(buffer) == AL_FALSE)
 		{
-			string_buffer_.clear();
-			string_buffer_ += "Invalid buffer ID ";
-			string_buffer_ += to_string(buffer);
-			fail(string_buffer_.c_str());
+			string_buffer_1_.clear();
+			string_buffer_1_ += "Invalid buffer ID ";
+			string_buffer_1_ += to_string(buffer, string_buffer_2_);
+			fail(string_buffer_1_.c_str());
 		}
 	}
 
@@ -2095,14 +2304,17 @@ void AL_APIENTRY AlApiImpl::alDeleteBuffers(ALsizei n, const ALuint* buffers) no
 try
 {
 	const auto lock = get_lock();
-	string_buffer_.clear();
-	string_buffer_ += "Deleting ";
-	string_buffer_ += to_string(n);
-	string_buffer_ += " buffer(s) at ";
-	string_buffer_ += ptr_to_str(buffers);
-	string_buffer_ += '.';
-	logger_.info(string_buffer_.c_str());
 
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alDeleteBuffers;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(n, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
+
+	al_symbols_.alGetError();
 	al_symbols_.alDeleteBuffers(n, buffers);
 
 	const auto buffers_span = make_span(buffers, n);
@@ -2148,15 +2360,22 @@ void AL_APIENTRY AlApiImpl::alBufferData(
 try
 {
 	const auto lock = get_lock();
-	al_symbols_.alGetError();
-	al_symbols_.alBufferData(buffer, format, data, size, freq);
 
-	if (al_symbols_.alGetError() != AL_NO_ERROR)
-	{
-		fail("Failed to fill a buffer with data.");
-	}
+	string_buffer_1_.clear();
+	string_buffer_1_ += AlSymbolsNames::alBufferData;
+	string_buffer_1_ += '(';
+	string_buffer_1_ += to_string(buffer, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += buffer_format_to_string(format, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += ptr_to_str(data, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += to_string(size, string_buffer_2_);
+	string_buffer_1_ += ", ";
+	string_buffer_1_ += to_string(freq, string_buffer_2_);
+	string_buffer_1_ += ')';
+	logger_.info(string_buffer_1_.c_str());
 
-	auto is_valid_format = true;
 	auto frame_size = 0;
 
 	switch (format)
@@ -2178,21 +2397,24 @@ try
 			break;
 
 		default:
-			is_valid_format = false;
-			break;
+			set_al_invalid_enum();
+			fail("Unknown format.");
+	}
+
+	al_symbols_.alGetError();
+	al_symbols_.alBufferData(buffer, format, data, size, freq);
+
+	if (al_symbols_.alGetError() != AL_NO_ERROR)
+	{
+		fail("Failed to fill a buffer with data.");
 	}
 
 	auto& our_buffer = get_buffer(buffer);
-	our_buffer.is_valid_format = is_valid_format;
-
-	if (is_valid_format)
-	{
-		our_buffer.frame_size = frame_size;
-		our_buffer.rate = freq;
-		our_buffer.size = size;
-		const auto frame_count = size / frame_size;
-		our_buffer.size_ms = static_cast<int>((frame_count * 1'000LL) / freq);
-	}
+	const auto frame_count = size / frame_size;
+	our_buffer.frame_size = frame_size;
+	our_buffer.rate = freq;
+	our_buffer.frame_count = frame_count;
+	our_buffer.duration_ms = static_cast<int>((frame_count * 1'000LL) / freq);
 }
 catch (...)
 {
@@ -2854,11 +3076,82 @@ void AlApiImpl::initialize_logger()
 	logger_.info("<<<<<<<<<<<<<<<<<<<<<<<<");
 	logger_.info("XFITSSFIX v" XFITSSFIX_VERSION);
 	logger_.info("<<<<<<<<<<<<<<<<<<<<<<<<");
-	string_buffer_.clear();
-	string_buffer_ += "Process ID: ";
-	string_buffer_ += to_string(process_id_);
-	logger_.info(string_buffer_.c_str());
+	string_buffer_1_.clear();
+	string_buffer_1_ += "Process ID: ";
+	string_buffer_1_ += to_string(process_id_, string_buffer_2_);
+	logger_.info(string_buffer_1_.c_str());
 	logger_.info("");
+}
+
+const char* AlApiImpl::get_source_param_string(ALenum param) noexcept
+{
+	switch (param)
+	{
+		case AL_PITCH: return "AL_PITCH";
+		case AL_GAIN: return "AL_GAIN";
+		case AL_MAX_DISTANCE: return "AL_MAX_DISTANCE";
+		case AL_ROLLOFF_FACTOR: return "AL_ROLLOFF_FACTOR";
+		case AL_REFERENCE_DISTANCE: return "AL_REFERENCE_DISTANCE";
+		case AL_MIN_GAIN: return "AL_MIN_GAIN";
+		case AL_MAX_GAIN: return "AL_MAX_GAIN";
+		case AL_CONE_OUTER_GAIN: return "AL_CONE_OUTER_GAIN";
+		case AL_CONE_INNER_ANGLE: return "AL_CONE_INNER_ANGLE";
+		case AL_CONE_OUTER_ANGLE: return "AL_CONE_OUTER_ANGLE";
+		case AL_POSITION: return "AL_POSITION";
+		case AL_VELOCITY: return "AL_VELOCITY";
+		case AL_DIRECTION: return "AL_DIRECTION";
+		case AL_SOURCE_RELATIVE: return "AL_SOURCE_RELATIVE";
+		case AL_SOURCE_TYPE: return "AL_SOURCE_TYPE";
+		case AL_LOOPING: return "AL_LOOPING";
+		case AL_BUFFER: return "AL_BUFFER";
+		case AL_SOURCE_STATE: return "AL_SOURCE_STATE";
+		case AL_BUFFERS_QUEUED: return "AL_BUFFERS_QUEUED";
+		case AL_BUFFERS_PROCESSED: return "AL_BUFFERS_PROCESSED";
+		case AL_SEC_OFFSET: return "AL_SEC_OFFSET";
+		case AL_SAMPLE_OFFSET: return "AL_SAMPLE_OFFSET";
+		case AL_BYTE_OFFSET: return "AL_BYTE_OFFSET";
+		default: return nullptr;
+	}
+}
+
+String& AlApiImpl::source_param_to_string(ALenum param, String& string)
+{
+	const auto param_string = get_source_param_string(param);
+
+	if (param_string != nullptr)
+	{
+		return string = param_string;
+	}
+	else
+	{
+		return to_string(param, string);
+	}
+}
+
+const char* AlApiImpl::get_buffer_format_string(ALenum param) noexcept
+{
+	switch (param)
+	{
+		case AL_FORMAT_MONO8: return "AL_FORMAT_MONO8";
+		case AL_FORMAT_MONO16: return "AL_FORMAT_MONO16";
+		case AL_FORMAT_STEREO8: return "AL_FORMAT_STEREO8";
+		case AL_FORMAT_STEREO16: return "AL_FORMAT_STEREO16";
+		default: return nullptr;
+	}
+}
+
+String& AlApiImpl::buffer_format_to_string(ALenum param, String& string)
+{
+	const auto param_string = get_buffer_format_string(param);
+
+	if (param_string != nullptr)
+	{
+		return string = param_string;
+	}
+	else
+	{
+		return to_string(param, string);
+	}
 }
 
 void AlApiImpl::initialize_al_driver()
@@ -3078,11 +3371,11 @@ void AlApiImpl::initialize_xram(Context& context) noexcept
 	if (context.xram_al_storage_accessible == AL_NONE)
 	{
 		al_symbols_.alGetError();
-		string_buffer_.clear();
-		string_buffer_ += "Missing X-RAM enum value for ";
-		string_buffer_ += al_storage_accessible_name;
-		string_buffer_ += '.';
-		logger_.warning(string_buffer_.c_str());
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Missing X-RAM enum value for ";
+		string_buffer_1_ += al_storage_accessible_name;
+		string_buffer_1_ += '.';
+		logger_.warning(string_buffer_1_.c_str());
 		return;
 	}
 
@@ -3120,7 +3413,8 @@ try
 	assert(mutex_);
 	auto mt_lock = MoveableMutexLock{*mutex_};
 	process_id_ = process::get_current_id();
-	string_buffer_.reserve(min_string_buffer_capacity);
+	string_buffer_1_.reserve(min_string_buffer_capacity);
+	string_buffer_2_.reserve(min_string_buffer_capacity);
 	initialize_logger();
 	initialize_al_driver();
 	initialize_al_symbols();
@@ -3216,11 +3510,11 @@ AlApiImpl::Buffer& AlApiImpl::get_buffer(ALuint bid)
 
 	if (buffer_it == buffer_map.end())
 	{
-		string_buffer_.clear();
-		string_buffer_ += "Unmapped buffer ";
-		string_buffer_ += to_string(bid);
-		string_buffer_ += '.';
-		fail(string_buffer_.c_str());
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Unmapped buffer ";
+		string_buffer_1_ += to_string(bid, string_buffer_2_);
+		string_buffer_1_ += '.';
+		fail(string_buffer_1_.c_str());
 	}
 
 	return buffer_it->second;
@@ -3234,11 +3528,11 @@ AlApiImpl::Source& AlApiImpl::get_source(ALuint sid)
 
 	if (source_it == source_map.end())
 	{
-		string_buffer_.clear();
-		string_buffer_ += "Unmapped source ";
-		string_buffer_ += to_string(sid);
-		string_buffer_ += '.';
-		fail(string_buffer_.c_str());
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Unmapped source ";
+		string_buffer_1_ += to_string(sid, string_buffer_2_);
+		string_buffer_1_ += '.';
+		fail(string_buffer_1_.c_str());
 	}
 
 	return source_it->second;
@@ -3280,74 +3574,128 @@ void AlApiImpl::mark_source_as_non_monitoring(Context& context, Source& source)
 	context.monitoring_sources.erase(&source);
 }
 
-void AlApiImpl::set_source_processed_time_point(Source& source, int processed_count, ClockTimePoint base_time_point)
+void AlApiImpl::update_source_monitoring(Source& source)
 {
-	const auto& queue = source.queue;
-	const auto queue_size = queue.get_size();
-	auto top_buffer_index = queue_size - processed_count - 1;
-	Buffer* buffer = nullptr;
+	auto processed = ALint{-1};
+	al_symbols_.alGetSourcei(source.id, AL_BUFFERS_PROCESSED, &processed);
 
-	if (top_buffer_index >= 0)
+	if (processed < 0)
 	{
-		buffer = queue[top_buffer_index];
+		fail("Failed to get source's processed buffer count.");
 	}
 
-	constexpr auto extra_duration = std::chrono::milliseconds{1};
-
-	source.processed_count = processed_count;
-	source.processed_time_point = base_time_point + extra_duration;
-
-	if (buffer != nullptr)
+	auto offset = ALint{-1};
+	al_symbols_.alGetSourcei(source.id, AL_SAMPLE_OFFSET, &offset);
+	
+	if (offset < 0)
 	{
-		const auto buffer_duration = std::chrono::milliseconds{buffer->size_ms};
-		source.processed_time_point += buffer_duration;
+		fail("Failed to get source's sample offset.");
+	}
+
+	auto total_frame_count = 0;
+	auto& queue = source.queue;
+
+	std::for_each(queue.begin() + processed, queue.end(),
+		[&total_frame_count](Buffer* buffer)
+		{
+			total_frame_count += (buffer != nullptr ? buffer->frame_count : 0);
+		}
+	);
+
+	constexpr auto extra_delay = std::chrono::milliseconds{5};
+	source.monitoring_time_point = Clock::now() + extra_delay;
+	const auto remain_frame_count = total_frame_count - offset;
+
+	if (remain_frame_count > 0)
+	{
+		const auto delay_ms = static_cast<int>(remain_frame_count * source.r_pitch_1000 * source.r_rate);
+		const auto delay = std::chrono::milliseconds{delay_ms};
+		source.monitoring_time_point += delay;
 	}
 }
 
-void AlApiImpl::handle_al_source_ix(ALuint sid, ALenum param, const ALint*)
+void AlApiImpl::handle_al_source_ix(ALuint sid, ALenum param, const ALint* values)
 {
+	// alSourcei(v)
+
 	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		string_buffer_.clear();
-		string_buffer_ += "Failed to set a property of a source ";
-		string_buffer_ += to_string(sid);
-		string_buffer_ += '.';
-		fail(string_buffer_.c_str());
+		fail("Failed to set integer param.");
 	}
 
-	if (param != AL_BUFFER)
+	if (param == AL_BUFFER)
 	{
-		return;
+		auto& source = get_source(sid);
+		const auto bid = *values;
+
+		if (bid != AL_NONE)
+		{
+			auto& buffer = get_buffer(bid);
+			source.queue.push(&buffer);
+			source.r_rate = 1.0 / buffer.rate;
+		}
+		else
+		{
+			source.queue.clear();
+			source.r_rate = 0.0;
+		}
+	}
+	else if (param == AL_LOOPING)
+	{
+		auto& context = get_context();
+		auto& source = get_source(sid);
+		const auto is_looping = ((*values) == AL_TRUE);
+
+		if (is_looping)
+		{
+			source.is_looping = true;
+			mark_source_as_non_monitoring(context, source);
+		}
+		else
+		{
+			source.is_looping = false;
+
+			if (source.is_monitorable())
+			{
+				update_source_monitoring(source);
+				mark_source_as_monitoring(context, source);
+			}
+		}
+	}
+}
+
+void AlApiImpl::handle_al_source_fx(ALuint sid, ALenum param, const ALfloat* values)
+{
+	// alSourcef(v)
+
+	if (al_symbols_.alGetError() != AL_NO_ERROR)
+	{
+		fail("Failed to set floating-point param.");
 	}
 
-	auto& context = get_context();
-	auto& source = get_source(sid);
-	source.is_streaming = false;
-	source.queue.clear();
-	mark_source_as_non_monitoring(context, source);
+	if (param == AL_PITCH)
+	{
+		auto& source = get_source(sid);
+		const auto pitch = *values;
+		source.r_pitch_1000 = 1'000.0 / pitch;
+
+		if (source.is_monitorable())
+		{
+			update_source_monitoring(source);
+		}
+	}
 }
 
 void AlApiImpl::handle_al_get_source_ix(ALuint sid, ALenum param, ALint* values)
 {
+	// alGetSourcei(v)
+
 	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		string_buffer_.clear();
-		string_buffer_ += "Failed to get parameter ";
-		string_buffer_ += to_string(param);
-		string_buffer_ += " on source ";
-		string_buffer_ += to_string(sid);
-		string_buffer_ += '.';
-		fail(string_buffer_.c_str());
+		fail("Failed to get integer parameter.");
 	}
 
 	if (param != AL_SOURCE_STATE)
-	{
-		return;
-	}
-
-	auto& source = get_source(sid);
-
-	if (!source.is_streaming)
 	{
 		return;
 	}
@@ -3360,20 +3708,18 @@ void AlApiImpl::handle_al_get_source_ix(ALuint sid, ALenum param, ALint* values)
 	}
 
 	auto& context = get_context();
+	auto& source = get_source(sid);
+	source.is_playing = false;
 	mark_source_as_non_monitoring(context, source);
 }
 
 void AlApiImpl::handle_al_source_state(ALsizei ns, const ALuint *sids, ALenum state)
 {
+	// alSourcePlay(v), alSourcePause(v), alSourceStop(v), alSourceRewind(v)
+
 	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		string_buffer_.clear();
-		string_buffer_ += "Failed to set state ";
-		string_buffer_ += to_string(state);
-		string_buffer_ += " on ";
-		string_buffer_ += to_string(ns);
-		string_buffer_ += " source(s).";
-		fail(string_buffer_.c_str());
+		fail("Failed to set source state.");
 	}
 
 	if (ns <= 0 || sids == nullptr)
@@ -3386,34 +3732,34 @@ void AlApiImpl::handle_al_source_state(ALsizei ns, const ALuint *sids, ALenum st
 
 	if (state != AL_PLAYING)
 	{
+		// Pause, stop or rewind issued.
+
 		for (const auto sid : sids_span)
 		{
 			auto& source = get_source(sid);
+			source.is_playing = false;
 			mark_source_as_non_monitoring(context, source);
 		}
 
 		return;
 	}
 
-	const auto base_time_point = Clock::now();
+	// Play issued.
 
 	for (const auto sid : sids_span)
 	{
-		ALint processed_count;
-		al_symbols_.alGetSourcei(sid, AL_BUFFERS_PROCESSED, &processed_count);
-
-		if (al_symbols_.alGetError() != AL_NO_ERROR)
-		{
-			string_buffer_.clear();
-			string_buffer_ += "Failed to get processed buffer count on source ";
-			string_buffer_ += to_string(sid);
-			string_buffer_ += '.';
-			fail(string_buffer_.c_str());
-		}
-
 		auto& source = get_source(sid);
-		set_source_processed_time_point(source, processed_count, base_time_point);
-		mark_source_as_monitoring(context, source);
+		source.is_playing = true;
+
+		if (source.is_looping)
+		{
+			mark_source_as_non_monitoring(context, source);
+		}
+		else
+		{
+			update_source_monitoring(source);
+			mark_source_as_monitoring(context, source);
+		}
 	}
 }
 
@@ -3423,13 +3769,7 @@ void AlApiImpl::handle_monitoring_source(MonitoringContext& monitoring_context)
 	auto& source = *monitoring_context.source;
 	const auto current_time_point = monitoring_context.time_point;
 
-	if (!source.is_streaming)
-	{
-		mark_source_as_non_monitoring(context, source);
-		return;
-	}
-
-	if (source.processed_time_point < current_time_point)
+	if (source.monitoring_time_point < current_time_point)
 	{
 		return;
 	}
@@ -3453,28 +3793,23 @@ void AlApiImpl::handle_monitoring_source(MonitoringContext& monitoring_context)
 
 	if (source_state != AL_PLAYING)
 	{
+		source.is_playing = false;
 		mark_source_as_non_monitoring(context, source);
 		return;
 	}
 
-	ALint processed_count;
-	al_symbols_.alGetSourcei(source.id, AL_BUFFERS_PROCESSED, &processed_count);
+	auto& string_buffer_1 = *monitoring_context.string_buffer_1;
+	auto& string_buffer_2 = *monitoring_context.string_buffer_2;
+	string_buffer_1.clear();
+	string_buffer_1 += "Stuck source ";
+	string_buffer_1 += to_string(source.id, string_buffer_2);
+	string_buffer_1 += '.';
+	logger_.warning(string_buffer_1.c_str());
 
-	if (source.processed_count == processed_count &&
-		processed_count != source.queue.get_size())
-	{
-		auto& string_buffer = *monitoring_context.string_buffer;
-		string_buffer.clear();
-		string_buffer += "Stuck source ";
-		string_buffer += to_string(source.id);
-		string_buffer += '.';
-		logger_.warning(string_buffer.c_str());
+	al_symbols_.alSourcePause(source.id);
+	al_symbols_.alSourcePlay(source.id);
 
-		al_symbols_.alSourcePause(source.id);
-		al_symbols_.alSourcePlay(source.id);
-	}
-
-	set_source_processed_time_point(source, processed_count, current_time_point);
+	update_source_monitoring(source);
 }
 
 void AlApiImpl::handle_monitoring_sources(MonitoringContext& monitoring_context)
@@ -3507,19 +3842,22 @@ void AlApiImpl::thread_func_proxy(void* user_data)
 
 void AlApiImpl::thread_func(ContextThread& context_thread)
 {
-	auto string_buffer = String{};
-	string_buffer.reserve(256);
+	auto string_buffer_1 = String{};
+	string_buffer_1.reserve(256);
+
+	auto string_buffer_2 = String{};
+	string_buffer_2.reserve(256);
 
 	auto monitoring_sources = MonitoringSources{};
 	monitoring_sources.reserve(sources_capacity);
 
 	{
 		const auto lock = get_lock();
-		string_buffer.clear();
-		string_buffer += "Monitoring thread ";
-		string_buffer += to_string_hex(context_thread.thread.get());
-		string_buffer += " started.";
-		logger_.info(string_buffer.c_str());
+		string_buffer_1.clear();
+		string_buffer_1 += "Monitoring thread ";
+		string_buffer_1 += to_string_hex(context_thread.thread.get(), string_buffer_2);
+		string_buffer_1 += " started.";
+		logger_.info(string_buffer_1.c_str());
 	}
 
 	constexpr auto sleep_duration_ms = 10;
@@ -3529,7 +3867,8 @@ void AlApiImpl::thread_func(ContextThread& context_thread)
 	auto monitoring_context = MonitoringContext{};
 	monitoring_context.context = context_thread.context;
 	monitoring_context.monitoring_sources = &monitoring_sources;
-	monitoring_context.string_buffer = &string_buffer;
+	monitoring_context.string_buffer_1 = &string_buffer_1;
+	monitoring_context.string_buffer_2 = &string_buffer_2;
 
 	while (true)
 	{
@@ -3538,11 +3877,11 @@ void AlApiImpl::thread_func(ContextThread& context_thread)
 
 			if (context_thread.quit_flag)
 			{
-				string_buffer.clear();
-				string_buffer += "Quitting the monitoring thread ";
-				string_buffer += to_string_hex(context_thread.thread.get());
-				string_buffer += '.';
-				logger_.info(string_buffer.c_str());
+				string_buffer_1.clear();
+				string_buffer_1 += "Quitting the monitoring thread ";
+				string_buffer_1 += to_string_hex(context_thread.thread.get(), string_buffer_2);
+				string_buffer_1 += '.';
+				logger_.info(string_buffer_1.c_str());
 				break;
 			}
 

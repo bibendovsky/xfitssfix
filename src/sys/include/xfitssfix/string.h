@@ -497,11 +497,12 @@ using U16String = StringT<char16_t>;
 
 // --------------------------------------------------------------------------
 
-void to_string(int value, String& string);
-void to_string(unsigned int value, String& string);
-void to_string(long long value, String& string);
-void to_string(unsigned long long value, String& string);
-void to_string(float value, String& string);
+String& to_string(int value, String& string);
+String& to_string(unsigned int value, String& string);
+String& to_string(long long value, String& string);
+String& to_string(unsigned long long value, String& string);
+String& to_string(float value, String& string);
+String& to_string_hex(const void* value, String& string);
 
 // --------------------------------------------------------------------------
 
