@@ -110,16 +110,19 @@ LoggerImpl::LoggerImpl(const LoggerParam& param)
 	message_buffer_ = make_message_buffer();
 	mutex_ = make_mutex();
 
-	try
+	if (param.file_path != nullptr)
 	{
-		file_ = make_file(
-			param.file_path,
-			static_cast<FileOpenMode>(
-				FileOpenMode::file_open_mode_read_write |
-				FileOpenMode::file_open_mode_truncate));
-	}
-	catch (...)
-	{
+		try
+		{
+			file_ = make_file(
+				param.file_path,
+				static_cast<FileOpenMode>(
+					FileOpenMode::file_open_mode_read_write |
+					FileOpenMode::file_open_mode_truncate));
+		}
+		catch (...)
+		{
+		}
 	}
 
 	thread_ = make_thread(thread_func_proxy, this);

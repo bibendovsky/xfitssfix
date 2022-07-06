@@ -315,7 +315,13 @@ public:
 		return begin() + size();
 	}
 
-	value_type back() const
+	const value_type& front() const
+	{
+		assert(!empty());
+		return data()[0];
+	}
+
+	const value_type& back() const
 	{
 		assert(!empty());
 		return data()[size() - 1];

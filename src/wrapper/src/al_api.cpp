@@ -362,6 +362,11 @@ private:
 	using Clock = std::chrono::steady_clock;
 	using ClockTimePoint = Clock::time_point;
 
+	static constexpr auto log_level_none = 0;
+	static constexpr auto log_level_error = 1;
+	static constexpr auto log_level_warning = 2;
+	static constexpr auto log_level_trace = 3;
+
 	template<typename T>
 	static String& ptr_to_str(T* ptr, String& string)
 	{
@@ -489,6 +494,7 @@ private:
 		ALuint id{AL_NONE};
 		bool is_playing{};
 		bool is_looping{};
+		bool is_streaming{};
 		double r_rate{0.0};
 		double r_pitch_1000{1'000.0};
 		ClockTimePoint monitoring_time_point{};
@@ -550,6 +556,7 @@ private:
 	InitializeFunc initialize_func_{};
 	MutexUPtr mutex_{};
 	Int process_id_{};
+	int log_level_{};
 	NullableLogger logger_{};
 	SharedLibraryUPtr al_library_{};
 	AlLoaderUPtr al_loader_{};
@@ -591,6 +598,7 @@ private:
 	void initialize_efx(Context& context);
 	void initialize_xram(Context& context);
 	static void initialize_eax_symbol_map(const EaxSymbols& symbols, AlSymbolMap& map) noexcept;
+	void initialize_eax(Context& context);
 
 	void initialize_logger();
 
@@ -673,27 +681,36 @@ AlApiImpl::AlApiImpl() noexcept
 
 AlApiImpl::~AlApiImpl()
 {
-	logger_.info("");
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("");
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += "Finalizing process ";
-	string_buffer_1_ += to_string(process_id_, string_buffer_2_);
-	string_buffer_1_ += '.';
-	logger_.info(string_buffer_1_.c_str());
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Finalizing process ";
+		string_buffer_1_ += to_string(process_id_, string_buffer_2_);
+		string_buffer_1_ += '.';
+		logger_.info(string_buffer_1_.c_str());
 
-	logger_.info(">>>>>>>>>>>>>>>>>>>>>>>>");
-	logger_.info("");
-	logger_.flush();
+		logger_.info(">>>>>>>>>>>>>>>>>>>>>>>>");
+		logger_.info("");
+		logger_.flush();
+	}
 }
 
 void AlApiImpl::on_thread_detach() noexcept
 {
-	logger_.flush();
+	if (log_level_ > log_level_none)
+	{
+		logger_.flush();
+	}
 }
 
 void AlApiImpl::on_process_detach() noexcept
 {
-	logger_.set_immediate_mode();
+	if (log_level_ > log_level_none)
+	{
+		logger_.set_immediate_mode();
+	}
 }
 
 ALCcontext* ALC_APIENTRY AlApiImpl::alcCreateContext(ALCdevice* device, const ALCint* attrlist) noexcept
@@ -706,14 +723,17 @@ try
 		fail("Tried to create a context on null device.");
 	}
 
-	logger_.info("");
-	logger_.info(al_api::Strings::equals_line_16);
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("");
+		logger_.info(al_api::Strings::equals_line_16);
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += "Create a context on device ";
-	string_buffer_1_ += ptr_to_str(device, string_buffer_2_);
-	string_buffer_1_ += '.';
-	logger_.info(string_buffer_1_.c_str());
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Create a context on device ";
+		string_buffer_1_ += ptr_to_str(device, string_buffer_2_);
+		string_buffer_1_ += '.';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	const auto al_context = al_symbols_.alcCreateContext(device, attrlist);
 
@@ -731,7 +751,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcCreateContext);
+	if (log_level_ > log_level_none)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcCreateContext);
+	}
+
 	return nullptr;
 }
 
@@ -740,23 +764,26 @@ try
 {
 	const auto lock = get_lock();
 
-	logger_.info("");
-	logger_.info(al_api::Strings::equals_line_16);
-
-	string_buffer_1_.clear();
-
-	if (context != nullptr)
+	if (log_level_ > log_level_none)
 	{
-		string_buffer_1_ += "Make context ";
-		string_buffer_1_ += to_string_hex(context, string_buffer_2_);
-		string_buffer_1_ += " current.";
-	}
-	else
-	{
-		string_buffer_1_ += "Unset the current context.";
-	}
+		logger_.info("");
+		logger_.info(al_api::Strings::equals_line_16);
 
-	logger_.info(string_buffer_1_.c_str());
+		string_buffer_1_.clear();
+
+		if (context != nullptr)
+		{
+			string_buffer_1_ += "Make context ";
+			string_buffer_1_ += to_string_hex(context, string_buffer_2_);
+			string_buffer_1_ += " current.";
+		}
+		else
+		{
+			string_buffer_1_ += "Unset the current context.";
+		}
+
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	const auto alc_result = al_symbols_.alcMakeContextCurrent(context);
 
@@ -776,24 +803,15 @@ try
 			our_context.source_map.reserve(sources_capacity);
 			our_context.monitoring_sources.reserve(sources_capacity);
 
-			logger_.info("Load EFX symbols.");
-			al_loader_->resolve_efx_symbols(our_context.efx_symbols);
-			initialize_efx_symbol_map(our_context.efx_symbols, our_context.efx_symbol_map);
-
-#if 0
-			logger_.info("Load X-RAM symbols.");
-			al_loader_->resolve_xram_symbols(our_context.xram_symbols);
-			initialize_xram_symbol_map(our_context.xram_symbols, our_context.xram_symbol_map);
-#else
+			initialize_efx(our_context);
 			initialize_xram(our_context);
-#endif
-
-			logger_.info("Load EAX symbols.");
-			al_loader_->resolve_eax_symbols(our_context.eax_symbols);
-			initialize_eax_symbol_map(our_context.eax_symbols, our_context.eax_symbol_map);
+			initialize_eax(our_context);
 
 			//
-			logger_.info("Create a monitoring thread.");
+			if (log_level_ > log_level_none)
+			{
+				logger_.info("Create a monitoring thread.");
+			}
 
 			auto context_thread = std::make_unique<ContextThread>();
 			context_thread->al_api = this;
@@ -801,10 +819,13 @@ try
 			context_thread->thread = make_thread(thread_func_proxy, context_thread.get());
 			our_context.context_thread.swap(context_thread);
 
-			string_buffer_1_.clear();
-			string_buffer_1_ += "Thread instance: ";
-			string_buffer_1_ += to_string_hex(our_context.context_thread->thread.get(), string_buffer_2_);
-			logger_.info(string_buffer_1_.c_str());
+			if (log_level_ > log_level_none)
+			{
+				string_buffer_1_.clear();
+				string_buffer_1_ += "Thread instance: ";
+				string_buffer_1_ += to_string_hex(our_context.context_thread->thread.get(), string_buffer_2_);
+				logger_.info(string_buffer_1_.c_str());
+			}
 		}
 	}
 	else
@@ -816,7 +837,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcMakeContextCurrent);
+	if (log_level_ > log_level_none)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcMakeContextCurrent);
+	}
+
 	return ALC_FALSE;
 }
 
@@ -828,7 +853,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcProcessContext);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcProcessContext);
+	}
 }
 
 void ALC_APIENTRY AlApiImpl::alcSuspendContext(ALCcontext* context) noexcept
@@ -839,7 +867,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcSuspendContext);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcSuspendContext);
+	}
 }
 
 void ALC_APIENTRY AlApiImpl::alcDestroyContext(ALCcontext* context) noexcept
@@ -850,14 +881,17 @@ try
 	{
 		const auto lock = get_lock();
 
-		logger_.info("");
-		logger_.info(al_api::Strings::equals_line_16);
+		if (log_level_ > log_level_none)
+		{
+			logger_.info("");
+			logger_.info(al_api::Strings::equals_line_16);
 
-		string_buffer_1_.clear();
-		string_buffer_1_ += "Destroy context ";
-		string_buffer_1_ += ptr_to_str(context, string_buffer_2_);
-		string_buffer_1_ += '.';
-		logger_.info(string_buffer_1_.c_str());
+			string_buffer_1_.clear();
+			string_buffer_1_ += "Destroy context ";
+			string_buffer_1_ += ptr_to_str(context, string_buffer_2_);
+			string_buffer_1_ += '.';
+			logger_.info(string_buffer_1_.c_str());
+		}
 
 		if (context != nullptr)
 		{
@@ -868,8 +902,12 @@ try
 				if (&our_context == current_context_)
 				{
 					current_context_ = nullptr;
-					logger_.warning("Destroying the current context.");
-					logger_.flush();
+
+					if (log_level_ >= log_level_warning)
+					{
+						logger_.warning("Destroying the current context.");
+						logger_.flush();
+					}
 				}
 			}
 
@@ -905,7 +943,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcDestroyContext);
+	if (log_level_ > log_level_none)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcDestroyContext);
+	}
 }
 
 ALCcontext* ALC_APIENTRY AlApiImpl::alcGetCurrentContext() noexcept
@@ -916,7 +957,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcGetCurrentContext);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcGetCurrentContext);
+	}
+
 	return nullptr;
 }
 
@@ -928,7 +973,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcGetContextsDevice);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcGetContextsDevice);
+	}
+
 	return nullptr;
 }
 
@@ -937,41 +986,48 @@ try
 {
 	const auto lock = get_lock();
 
-	logger_.info("");
-	logger_.info(al_api::Strings::equals_line_16);
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("");
+		logger_.info(al_api::Strings::equals_line_16);
 
-	if (devicename != nullptr)
-	{
-		string_buffer_1_.clear();
-		string_buffer_1_ += "Open device \"";
-		string_buffer_1_ += devicename;
-		string_buffer_1_ += "\".";
-		logger_.info(string_buffer_1_.c_str());
-	}
-	else
-	{
-		logger_.info("Open default device.");
+		if (devicename != nullptr)
+		{
+			string_buffer_1_.clear();
+			string_buffer_1_ += "Open device \"";
+			string_buffer_1_ += devicename;
+			string_buffer_1_ += "\".";
+			logger_.info(string_buffer_1_.c_str());
+		}
+		else
+		{
+			logger_.info("Open default device.");
+		}
 	}
 
 	const auto al_device = al_symbols_.alcOpenDevice(devicename);
 
 	if (al_device == nullptr)
 	{
-		logger_.error("AL failed to open the device.");
+		fail("AL failed to open the device.");
 		return nullptr;
 	}
 
 	const auto effective_device_name = al_symbols_.alcGetString(al_device, ALC_DEVICE_SPECIFIER);
-	string_buffer_1_.clear();
-	string_buffer_1_ += "Effective name: \"";
-	string_buffer_1_ += (effective_device_name != nullptr ? effective_device_name : null_string);
-	string_buffer_1_ += "\".";
-	logger_.info(string_buffer_1_.c_str());
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += "Instance: ";
-	string_buffer_1_ += to_string_hex(al_device, string_buffer_2_);
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ > log_level_none)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Effective name: \"";
+		string_buffer_1_ += (effective_device_name != nullptr ? effective_device_name : null_string);
+		string_buffer_1_ += "\".";
+		logger_.info(string_buffer_1_.c_str());
+
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Instance: ";
+		string_buffer_1_ += to_string_hex(al_device, string_buffer_2_);
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	if (effective_device_name == nullptr)
 	{
@@ -995,7 +1051,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcOpenDevice);
+	if (log_level_ > log_level_none)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcOpenDevice);
+	}
+
 	return nullptr;
 }
 
@@ -1008,14 +1068,17 @@ try
 	{
 		const auto lock = get_lock();
 
-		logger_.info("");
-		logger_.info(al_api::Strings::equals_line_16);
+		if (log_level_ > log_level_none)
+		{
+			logger_.info("");
+			logger_.info(al_api::Strings::equals_line_16);
 
-		string_buffer_1_.clear();
-		string_buffer_1_ += "Close device ";
-		string_buffer_1_ += ptr_to_str(device, string_buffer_2_);
-		string_buffer_1_ += '.';
-		logger_.info(string_buffer_1_.c_str());
+			string_buffer_1_.clear();
+			string_buffer_1_ += "Close device ";
+			string_buffer_1_ += ptr_to_str(device, string_buffer_2_);
+			string_buffer_1_ += '.';
+			logger_.info(string_buffer_1_.c_str());
+		}
 
 		if (device != nullptr)
 		{
@@ -1025,17 +1088,26 @@ try
 			{
 				if (!al_device->buffer_map.empty())
 				{
-					logger_.warning("The device has buffers.");
+					if (log_level_ >= log_level_warning)
+					{
+						logger_.warning("The device has buffers.");
+					}
 				}
 
 				if (!al_device->contexts.empty())
 				{
-					logger_.warning("The device has contexts.");
+					if (log_level_ >= log_level_warning)
+					{
+						logger_.warning("The device has contexts.");
+					}
 				}
 			}
 			else
 			{
-				logger_.warning("Unregistered device.");
+				if (log_level_ >= log_level_warning)
+				{
+					logger_.warning("Unregistered device.");
+				}
 			}
 		}
 
@@ -1096,7 +1168,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcCloseDevice);
+	if (log_level_ > log_level_none)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcCloseDevice);
+	}
+
 	return ALC_FALSE;
 }
 
@@ -1108,7 +1184,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcGetError);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcGetError);
+	}
+
 	return ALC_INVALID_DEVICE;
 }
 
@@ -1120,7 +1200,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcIsExtensionPresent);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcIsExtensionPresent);
+	}
+
 	return AL_FALSE;
 }
 
@@ -1140,7 +1224,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcGetProcAddress);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcGetProcAddress);
+	}
+
 	return nullptr;
 }
 
@@ -1152,7 +1240,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcGetEnumValue);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcGetEnumValue);
+	}
+
 	return AL_NONE;
 }
 
@@ -1164,7 +1256,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcGetString);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcGetString);
+	}
+
 	return nullptr;
 }
 
@@ -1176,7 +1272,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcGetIntegerv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcGetIntegerv);
+	}
 }
 
 ALCdevice* ALC_APIENTRY AlApiImpl::alcCaptureOpenDevice(
@@ -1191,7 +1290,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcCaptureOpenDevice);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcCaptureOpenDevice);
+	}
+
 	return nullptr;
 }
 
@@ -1203,7 +1306,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcCaptureCloseDevice);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcCaptureCloseDevice);
+	}
+
 	return ALC_FALSE;
 }
 
@@ -1215,7 +1322,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcCaptureStart);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcCaptureStart);
+	}
 }
 
 void ALC_APIENTRY AlApiImpl::alcCaptureStop(ALCdevice* device) noexcept
@@ -1226,7 +1336,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcCaptureStop);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcCaptureStop);
+	}
 }
 
 void ALC_APIENTRY AlApiImpl::alcCaptureSamples(ALCdevice* device, ALCvoid* buffer, ALCsizei samples) noexcept
@@ -1237,7 +1350,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alcCaptureSamples);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alcCaptureSamples);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDopplerFactor(ALfloat value) noexcept
@@ -1248,7 +1364,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDopplerFactor);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDopplerFactor);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDopplerVelocity(ALfloat value) noexcept
@@ -1259,7 +1378,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDopplerVelocity);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDopplerVelocity);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSpeedOfSound(ALfloat value) noexcept
@@ -1270,7 +1392,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSpeedOfSound);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSpeedOfSound);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDistanceModel(ALenum distanceModel) noexcept
@@ -1281,7 +1406,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDistanceModel);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDistanceModel);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alEnable(ALenum capability) noexcept
@@ -1292,7 +1420,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alEnable);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alEnable);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDisable(ALenum capability) noexcept
@@ -1303,7 +1434,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDisable);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDisable);
+	}
 }
 
 ALboolean AL_APIENTRY AlApiImpl::alIsEnabled(ALenum capability) noexcept
@@ -1314,7 +1448,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alIsEnabled);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alIsEnabled);
+	}
+
 	return AL_FALSE;
 }
 
@@ -1326,7 +1464,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetString);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetString);
+	}
+
 	return nullptr;
 }
 
@@ -1338,7 +1480,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetBooleanv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetBooleanv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetIntegerv(ALenum param, ALint* values) noexcept
@@ -1349,7 +1494,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetIntegerv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetIntegerv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetFloatv(ALenum param, ALfloat* values) noexcept
@@ -1360,7 +1508,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetFloatv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetFloatv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetDoublev(ALenum param, ALdouble* values) noexcept
@@ -1371,7 +1522,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetDoublev);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetDoublev);
+	}
 }
 
 ALboolean AL_APIENTRY AlApiImpl::alGetBoolean(ALenum param) noexcept
@@ -1382,7 +1536,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetBoolean);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetBoolean);
+	}
+
 	return AL_FALSE;
 }
 
@@ -1394,7 +1552,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetInteger);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetInteger);
+	}
+
 	return 0;
 }
 
@@ -1406,7 +1568,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetFloat);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetFloat);
+	}
+
 	return 0.0F;
 }
 
@@ -1418,7 +1584,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetDouble);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetDouble);
+	}
+
 	return 0.0;
 }
 
@@ -1430,7 +1600,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetError);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetError);
+	}
+
 	return AL_INVALID_OPERATION;
 }
 
@@ -1442,7 +1616,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alIsExtensionPresent);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alIsExtensionPresent);
+	}
+
 	return AL_FALSE;
 }
 
@@ -1483,7 +1661,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetProcAddress);
+	if (log_level_ > log_level_none)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetProcAddress);
+	}
+
 	return nullptr;
 }
 
@@ -1494,7 +1676,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetEnumValue);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetEnumValue);
+	}
+
 	return 0;
 }
 
@@ -1506,7 +1692,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alListenerf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alListenerf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alListener3f(ALenum param, ALfloat value1, ALfloat value2, ALfloat value3) noexcept
@@ -1517,7 +1706,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alListener3f);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alListener3f);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alListenerfv(ALenum param, const ALfloat* values) noexcept
@@ -1528,7 +1720,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alListenerfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alListenerfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alListeneri(ALenum param, ALint value) noexcept
@@ -1539,7 +1734,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alListeneri);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alListeneri);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alListener3i(ALenum param, ALint value1, ALint value2, ALint value3) noexcept
@@ -1550,7 +1748,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alListener3i);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alListener3i);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alListeneriv(ALenum param, const ALint* values) noexcept
@@ -1561,7 +1762,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alListeneriv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alListeneriv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetListenerf(ALenum param, ALfloat* value) noexcept
@@ -1572,7 +1776,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetListenerf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetListenerf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetListener3f(
@@ -1587,7 +1794,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetListener3f);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetListener3f);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetListenerfv(ALenum param, ALfloat* values) noexcept
@@ -1598,7 +1808,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetListenerfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetListenerfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetListeneri(ALenum param, ALint* value) noexcept
@@ -1609,7 +1822,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetListeneri);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetListeneri);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetListener3i(ALenum param, ALint* value1, ALint* value2, ALint* value3) noexcept
@@ -1620,7 +1836,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetListener3i);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetListener3i);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetListeneriv(ALenum param, ALint* values) noexcept
@@ -1631,7 +1850,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetListeneriv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetListeneriv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGenSources(ALsizei n, ALuint* sources) noexcept
@@ -1639,14 +1861,17 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alGenSources;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(n, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alGenSources;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(n, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGenSources(n, sources);
 
@@ -1679,7 +1904,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGenSources);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGenSources);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDeleteSources(ALsizei n, const ALuint* sources) noexcept
@@ -1687,14 +1915,17 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alDeleteSources;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(n, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alDeleteSources;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(n, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alDeleteSources(n, sources);
 
@@ -1722,7 +1953,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDeleteSources);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDeleteSources);
+	}
 }
 
 ALboolean AL_APIENTRY AlApiImpl::alIsSource(ALuint source) noexcept
@@ -1733,7 +1967,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alIsSource);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alIsSource);
+	}
+
 	return AL_FALSE;
 }
 
@@ -1742,16 +1980,19 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourcef;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += to_string(value, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourcef;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += to_string(value, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourcef(source, param, value);
@@ -1759,7 +2000,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourcef);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourcef);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSource3f(ALuint source, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3) noexcept
@@ -1770,7 +2014,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSource3f);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSource3f);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourcefv(ALuint source, ALenum param, const ALfloat* values) noexcept
@@ -1778,16 +2025,19 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourcefv;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourcefv;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourcefv(source, param, values);
@@ -1795,7 +2045,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourcefv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourcefv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourcei(ALuint source, ALenum param, ALint value) noexcept
@@ -1803,16 +2056,19 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourcei;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += to_string(value, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourcei;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += to_string(value, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourcei(source, param, value);
@@ -1820,7 +2076,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourcei);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourcei);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSource3i(ALuint source, ALenum param, ALint value1, ALint value2, ALint value3) noexcept
@@ -1831,7 +2090,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSource3i);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSource3i);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourceiv(ALuint source, ALenum param, const ALint* values) noexcept
@@ -1839,16 +2101,19 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourceiv;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourceiv;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourceiv(source, param, values);
@@ -1856,7 +2121,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourceiv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourceiv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetSourcef(ALuint source, ALenum param, ALfloat* value) noexcept
@@ -1867,7 +2135,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetSourcef);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetSourcef);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetSource3f(ALuint source, ALenum param, ALfloat* value1, ALfloat* value2, ALfloat* value3) noexcept
@@ -1878,7 +2149,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetSource3f);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetSource3f);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetSourcefv(ALuint source, ALenum param, ALfloat* values) noexcept
@@ -1889,7 +2163,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetSourcefv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetSourcefv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetSourcei(ALuint source, ALenum param, ALint* value) noexcept
@@ -1897,16 +2174,19 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alGetSourcei;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(value, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alGetSourcei;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(value, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alGetSourcei(source, param, value);
@@ -1914,7 +2194,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetSourcei);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetSourcei);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetSource3i(ALuint source, ALenum param, ALint* value1, ALint* value2, ALint* value3) noexcept
@@ -1925,7 +2208,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetSource3i);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetSource3i);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetSourceiv(ALuint source, ALenum param, ALint* values) noexcept
@@ -1933,16 +2219,19 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alGetSourceiv;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alGetSourceiv;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += source_param_to_string(param, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(values, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alGetSourceiv(source, param, values);
@@ -1950,7 +2239,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetSourceiv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetSourceiv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourcePlayv(ALsizei n, const ALuint* sources) noexcept
@@ -1958,14 +2250,17 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourcePlayv;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(n, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourcePlayv;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(n, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourcePlayv(n, sources);
@@ -1973,7 +2268,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourcePlayv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourcePlayv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourceStopv(ALsizei n, const ALuint* sources) noexcept
@@ -1981,14 +2279,17 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourceStopv;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(n, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourceStopv;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(n, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourceStopv(n, sources);
@@ -1996,7 +2297,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourceStopv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourceStopv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourceRewindv(ALsizei n, const ALuint* sources) noexcept
@@ -2004,14 +2308,17 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourceRewindv;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(n, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourceRewindv;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(n, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourceRewindv(n, sources);
@@ -2019,7 +2326,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourceRewindv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourceRewindv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourcePausev(ALsizei n, const ALuint* sources) noexcept
@@ -2027,14 +2337,17 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourcePausev;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(n, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourcePausev;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(n, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(sources, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourcePausev(n, sources);
@@ -2042,7 +2355,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourcePausev);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourcePausev);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourcePlay(ALuint source) noexcept
@@ -2050,12 +2366,15 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourcePlay;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourcePlay;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourcePlay(source);
@@ -2063,7 +2382,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourcePlay);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourcePlay);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourceStop(ALuint source) noexcept
@@ -2071,12 +2393,15 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourceStop;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourceStop;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourceStop(source);
@@ -2084,7 +2409,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourceStop);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourceStop);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourceRewind(ALuint source) noexcept
@@ -2092,12 +2420,15 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourceRewind;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourceRewind;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourceRewind(source);
@@ -2105,7 +2436,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourceRewind);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourceRewind);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourcePause(ALuint source) noexcept
@@ -2113,12 +2447,15 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourcePause;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourcePause;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourcePause(source);
@@ -2126,7 +2463,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourcePause);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourcePause);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourceQueueBuffers(ALuint source, ALsizei nb, const ALuint* buffers) noexcept
@@ -2134,15 +2474,19 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourceQueueBuffers;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += to_string(nb, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
-	string_buffer_1_ += ')';
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourceQueueBuffers;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += to_string(nb, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourceQueueBuffers(source, nb, buffers);
@@ -2178,7 +2522,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourceQueueBuffers);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourceQueueBuffers);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alSourceUnqueueBuffers(ALuint source, ALsizei nb, ALuint* buffers) noexcept
@@ -2186,15 +2533,19 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alSourceUnqueueBuffers;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(source, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += to_string(nb, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
-	string_buffer_1_ += ')';
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alSourceUnqueueBuffers;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(source, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += to_string(nb, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alSourceUnqueueBuffers(source, nb, buffers);
@@ -2214,7 +2565,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alSourceUnqueueBuffers);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alSourceUnqueueBuffers);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGenBuffers(ALsizei n, ALuint* buffers) noexcept
@@ -2222,14 +2576,17 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alGenBuffers;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(n, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alGenBuffers;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(n, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alGenBuffers(n, buffers);
@@ -2270,13 +2627,16 @@ try
 
 		if (xram_result == AL_FALSE)
 		{
-			logger_.warning("Failed to set X-RAM mode to ACCESSIBLE.");
+			fail("Failed to set X-RAM mode to ACCESSIBLE.");
 		}
 	}
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGenBuffers);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGenBuffers);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDeleteBuffers(ALsizei n, const ALuint* buffers) noexcept
@@ -2284,14 +2644,17 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alDeleteBuffers;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(n, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alDeleteBuffers;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(n, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(buffers, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	al_symbols_.alGetError();
 	al_symbols_.alDeleteBuffers(n, buffers);
@@ -2315,7 +2678,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDeleteBuffers);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDeleteBuffers);
+	}
 }
 
 ALboolean AL_APIENTRY AlApiImpl::alIsBuffer(ALuint buffer) noexcept
@@ -2326,7 +2692,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alIsBuffer);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alIsBuffer);
+	}
+
 	return AL_FALSE;
 }
 
@@ -2340,20 +2710,23 @@ try
 {
 	const auto lock = get_lock();
 
-	string_buffer_1_.clear();
-	string_buffer_1_ += AlSymbolsNames::alBufferData;
-	string_buffer_1_ += '(';
-	string_buffer_1_ += to_string(buffer, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += buffer_format_to_string(format, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += ptr_to_str(data, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += to_string(size, string_buffer_2_);
-	string_buffer_1_ += ", ";
-	string_buffer_1_ += to_string(freq, string_buffer_2_);
-	string_buffer_1_ += ')';
-	logger_.info(string_buffer_1_.c_str());
+	if (log_level_ >= log_level_trace)
+	{
+		string_buffer_1_.clear();
+		string_buffer_1_ += AlSymbolsNames::alBufferData;
+		string_buffer_1_ += '(';
+		string_buffer_1_ += to_string(buffer, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += buffer_format_to_string(format, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += ptr_to_str(data, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += to_string(size, string_buffer_2_);
+		string_buffer_1_ += ", ";
+		string_buffer_1_ += to_string(freq, string_buffer_2_);
+		string_buffer_1_ += ')';
+		logger_.info(string_buffer_1_.c_str());
+	}
 
 	auto frame_size = 0;
 
@@ -2397,7 +2770,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alBufferData);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alBufferData);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alBufferf(ALuint buffer, ALenum param, ALfloat value) noexcept
@@ -2416,7 +2792,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alBufferf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alBufferf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alBuffer3f(ALuint buffer, ALenum param, ALfloat value1, ALfloat value2, ALfloat value3) noexcept
@@ -2435,7 +2814,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alBuffer3f);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alBuffer3f);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alBufferfv(ALuint buffer, ALenum param, const ALfloat* values) noexcept
@@ -2454,7 +2836,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alBufferfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alBufferfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alBufferi(ALuint buffer, ALenum param, ALint value) noexcept
@@ -2465,7 +2850,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alBufferi);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alBufferi);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alBuffer3i(ALuint buffer, ALenum param, ALint value1, ALint value2, ALint value3) noexcept
@@ -2484,7 +2872,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alBuffer3i);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alBuffer3i);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alBufferiv(ALuint buffer, ALenum param, const ALint* values) noexcept
@@ -2503,7 +2894,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alBufferiv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alBufferiv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetBufferf(ALuint buffer, ALenum param, ALfloat* value) noexcept
@@ -2514,7 +2908,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetBufferf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetBufferf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetBuffer3f(ALuint buffer, ALenum param, ALfloat* value1, ALfloat* value2, ALfloat* value3) noexcept
@@ -2533,7 +2930,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetBuffer3f);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetBuffer3f);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetBufferfv(ALuint buffer, ALenum param, ALfloat* values) noexcept
@@ -2552,7 +2952,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetBufferfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetBufferfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetBufferi(ALuint buffer, ALenum param, ALint* value) noexcept
@@ -2563,7 +2966,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetBufferi);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetBufferi);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetBuffer3i(ALuint buffer, ALenum param, ALint* value1, ALint* value2, ALint* value3) noexcept
@@ -2582,7 +2988,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetBuffer3i);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetBuffer3i);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetBufferiv(ALuint buffer, ALenum param, ALint* values) noexcept
@@ -2601,7 +3010,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetBufferiv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetBufferiv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGenEffects(ALsizei n, ALuint* effects) noexcept
@@ -2612,7 +3024,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGenEffects);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGenEffects);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDeleteEffects(ALsizei n, ALuint* effects) noexcept
@@ -2623,7 +3038,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDeleteEffects);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDeleteEffects);
+	}
 }
 
 ALboolean AL_APIENTRY AlApiImpl::alIsEffect(ALuint eid) noexcept
@@ -2634,7 +3052,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alIsEffect);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alIsEffect);
+	}
+
 	return AL_FALSE;
 }
 
@@ -2646,7 +3068,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alEffecti);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alEffecti);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alEffectiv(ALuint eid, ALenum param, ALint* values) noexcept
@@ -2657,7 +3082,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alEffectiv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alEffectiv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alEffectf(ALuint eid, ALenum param, ALfloat value) noexcept
@@ -2668,7 +3096,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alEffectf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alEffectf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alEffectfv(ALuint eid, ALenum param, ALfloat* values) noexcept
@@ -2679,7 +3110,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alEffectfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alEffectfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetEffecti(ALuint eid, ALenum pname, ALint* value) noexcept
@@ -2690,7 +3124,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetEffecti);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetEffecti);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetEffectiv(ALuint eid, ALenum pname, ALint* values) noexcept
@@ -2701,7 +3138,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetEffectiv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetEffectiv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetEffectf(ALuint eid, ALenum pname, ALfloat* value) noexcept
@@ -2712,7 +3152,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetEffectf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetEffectf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetEffectfv(ALuint eid, ALenum pname, ALfloat* values) noexcept
@@ -2723,7 +3166,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetEffectfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetEffectfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGenFilters(ALsizei n, ALuint* filters) noexcept
@@ -2734,7 +3180,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGenFilters);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGenFilters);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDeleteFilters(ALsizei n, ALuint* filters) noexcept
@@ -2745,7 +3194,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDeleteFilters);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDeleteFilters);
+	}
 }
 
 ALboolean AL_APIENTRY AlApiImpl::alIsFilter(ALuint fid) noexcept
@@ -2756,7 +3208,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alIsFilter);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alIsFilter);
+	}
+
 	return AL_FALSE;
 }
 
@@ -2768,7 +3224,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alFilteri);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alFilteri);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alFilteriv(ALuint fid, ALenum param, ALint* values) noexcept
@@ -2779,7 +3238,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alFilteriv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alFilteriv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alFilterf(ALuint fid, ALenum param, ALfloat value) noexcept
@@ -2790,7 +3252,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alFilterf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alFilterf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alFilterfv(ALuint fid, ALenum param, ALfloat* values) noexcept
@@ -2801,7 +3266,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alFilterfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alFilterfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetFilteri(ALuint fid, ALenum pname, ALint* value) noexcept
@@ -2812,7 +3280,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetFilteri);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetFilteri);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetFilteriv(ALuint fid, ALenum pname, ALint* values) noexcept
@@ -2823,7 +3294,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetFilteriv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetFilteriv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetFilterf(ALuint fid, ALenum pname, ALfloat* value) noexcept
@@ -2834,7 +3308,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetFilterf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetFilterf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetFilterfv(ALuint fid, ALenum pname, ALfloat* values) noexcept
@@ -2845,7 +3322,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetFilterfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetFilterfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGenAuxiliaryEffectSlots(ALsizei n, ALuint* slots) noexcept
@@ -2856,7 +3336,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGenAuxiliaryEffectSlots);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGenAuxiliaryEffectSlots);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alDeleteAuxiliaryEffectSlots(ALsizei n, ALuint* slots) noexcept
@@ -2867,7 +3350,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alDeleteAuxiliaryEffectSlots);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alDeleteAuxiliaryEffectSlots);
+	}
 }
 
 ALboolean AL_APIENTRY AlApiImpl::alIsAuxiliaryEffectSlot(ALuint slot) noexcept
@@ -2878,7 +3364,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alIsAuxiliaryEffectSlot);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alIsAuxiliaryEffectSlot);
+	}
+
 	return AL_FALSE;
 }
 
@@ -2890,7 +3380,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alAuxiliaryEffectSloti);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alAuxiliaryEffectSloti);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alAuxiliaryEffectSlotiv(ALuint asid, ALenum param, ALint* values) noexcept
@@ -2901,7 +3394,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alAuxiliaryEffectSlotiv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alAuxiliaryEffectSlotiv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alAuxiliaryEffectSlotf(ALuint asid, ALenum param, ALfloat value) noexcept
@@ -2912,7 +3408,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alAuxiliaryEffectSlotf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alAuxiliaryEffectSlotf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alAuxiliaryEffectSlotfv(ALuint asid, ALenum param, ALfloat* values) noexcept
@@ -2923,7 +3422,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alAuxiliaryEffectSlotfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alAuxiliaryEffectSlotfv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetAuxiliaryEffectSloti(ALuint asid, ALenum pname, ALint* value) noexcept
@@ -2934,7 +3436,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetAuxiliaryEffectSloti);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetAuxiliaryEffectSloti);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetAuxiliaryEffectSlotiv(ALuint asid, ALenum pname, ALint* values) noexcept
@@ -2945,7 +3450,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetAuxiliaryEffectSlotiv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetAuxiliaryEffectSlotiv);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetAuxiliaryEffectSlotf(ALuint asid, ALenum pname, ALfloat* value) noexcept
@@ -2956,7 +3464,10 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetAuxiliaryEffectSlotf);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetAuxiliaryEffectSlotf);
+	}
 }
 
 void AL_APIENTRY AlApiImpl::alGetAuxiliaryEffectSlotfv(ALuint asid, ALenum pname, ALfloat* values) noexcept
@@ -2981,7 +3492,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, EaxSymbolsNames::EAXSet);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, EaxSymbolsNames::EAXSet);
+	}
+
 	return AL_INVALID_OPERATION;
 }
 
@@ -2993,7 +3508,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, EaxSymbolsNames::EAXGet);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, EaxSymbolsNames::EAXGet);
+	}
+
 	return AL_INVALID_OPERATION;
 }
 
@@ -3004,13 +3523,55 @@ catch (...)
 
 void AlApiImpl::initialize_logger()
 {
+	log_level_ = log_level_none;
+
+	try
+	{
+		const auto log_level_string = env::get_var("XFITSSFIX_LOG_LEVEL");
+
+		if (log_level_string.size() == 1)
+		{
+			const auto log_level_char = log_level_string.front();
+
+			switch (log_level_char)
+			{
+				case '0':
+					log_level_ = log_level_none;
+					break;
+
+				case '1':
+					log_level_ = log_level_error;
+					break;
+
+				case '2':
+					log_level_ = log_level_warning;
+					break;
+
+				case '3':
+					log_level_ = log_level_trace;
+					break;
+
+				default:
+					break;
+			}
+		}
+	}
+	catch (...)
+	{
+	}
+
 	constexpr auto log_file_name = "xfitssfix_log.txt";
 
 	auto logger_param = LoggerParam{};
-	logger_param.file_path = log_file_name;
+
+	if (log_level_ > log_level_none)
+	{
+		logger_param.file_path = log_file_name;
+	}
+
 	logger_.make(logger_param);
 
-	if (!logger_.has_file())
+	if (log_level_ > log_level_none && !logger_.has_file())
 	{
 		try
 		{
@@ -3028,15 +3589,20 @@ void AlApiImpl::initialize_logger()
 		}
 	}
 
-	logger_.info("");
-	logger_.info("<<<<<<<<<<<<<<<<<<<<<<<<");
-	logger_.info("XFITSSFIX v" XFITSSFIX_VERSION);
-	logger_.info("<<<<<<<<<<<<<<<<<<<<<<<<");
-	string_buffer_1_.clear();
-	string_buffer_1_ += "Process ID: ";
-	string_buffer_1_ += to_string(process_id_, string_buffer_2_);
-	logger_.info(string_buffer_1_.c_str());
-	logger_.info("");
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("");
+		logger_.info("<<<<<<<<<<<<<<<<<<<<<<<<");
+		logger_.info("XFITSSFIX v" XFITSSFIX_VERSION);
+		logger_.info("<<<<<<<<<<<<<<<<<<<<<<<<");
+
+		string_buffer_1_.clear();
+		string_buffer_1_ += "Process ID: ";
+		string_buffer_1_ += to_string(process_id_, string_buffer_2_);
+		logger_.info(string_buffer_1_.c_str());
+
+		logger_.info("");
+	}
 }
 
 const char* AlApiImpl::get_source_param_string(ALenum param) noexcept
@@ -3112,7 +3678,10 @@ String& AlApiImpl::buffer_format_to_string(ALenum param, String& string)
 
 void AlApiImpl::initialize_al_driver()
 {
-	logger_.info("Load AL driver.");
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("Load AL driver.");
+	}
 
 	constexpr const char* const known_names[] =
 	{
@@ -3128,15 +3697,21 @@ void AlApiImpl::initialize_al_driver()
 	{
 		try
 		{
-			const auto message = "Try to load a driver \"" + String{known_name} + "\".";
-			logger_.info(message.c_str());
-			al_library_ = make_shared_library(known_name);
+			if (log_level_ > log_level_none)
+			{
+				const auto message = "Try to load a driver \"" + String{known_name} + "\".";
+				logger_.info(message.c_str());
+			}
 
+			al_library_ = make_shared_library(known_name);
 			return;
 		}
 		catch (...)
 		{
-			utils::log_exception(logger_);
+			if (log_level_ >= log_level_error)
+			{
+				utils::log_exception(logger_);
+			}
 		}
 	}
 
@@ -3145,10 +3720,18 @@ void AlApiImpl::initialize_al_driver()
 
 void AlApiImpl::initialize_al_symbols()
 {
-	logger_.info("Create AL symbol loader.");
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("Create AL symbol loader.");
+	}
+
 	al_loader_ = make_al_loader(al_library_.get());
 
-	logger_.info("Load AL symbols.");
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("Load AL symbols.");
+	}
+
 	al_loader_->resolve_al_symbols(al_symbols_);
 }
 
@@ -3315,7 +3898,11 @@ void AlApiImpl::initialize_xram(Context& context)
 
 	if (al_symbols_.alIsExtensionPresent("EAX-RAM") == AL_FALSE)
 	{
-		logger_.warning("X-RAM extension string not found.");
+		if (log_level_ > log_level_none)
+		{
+			logger_.warning("X-RAM extension string not found.");
+		}
+
 		return;
 	}
 
@@ -3324,7 +3911,11 @@ void AlApiImpl::initialize_xram(Context& context)
 	if (context.xram_symbols.EAXSetBufferMode == nullptr ||
 		context.xram_symbols.EAXGetBufferMode == nullptr)
 	{
-		logger_.warning("Missing X-RAM symbol(s).");
+		if (log_level_ > log_level_none)
+		{
+			logger_.warning("Missing X-RAM symbol(s).");
+		}
+
 		return;
 	}
 
@@ -3334,11 +3925,16 @@ void AlApiImpl::initialize_xram(Context& context)
 	if (context.xram_al_storage_accessible == AL_NONE)
 	{
 		al_symbols_.alGetError();
-		string_buffer_1_.clear();
-		string_buffer_1_ += "Missing X-RAM enum value for ";
-		string_buffer_1_ += al_storage_accessible_name;
-		string_buffer_1_ += '.';
-		logger_.warning(string_buffer_1_.c_str());
+
+		if (log_level_ > log_level_none)
+		{
+			string_buffer_1_.clear();
+			string_buffer_1_ += "Missing X-RAM enum value for ";
+			string_buffer_1_ += al_storage_accessible_name;
+			string_buffer_1_ += '.';
+			logger_.warning(string_buffer_1_.c_str());
+		}
+
 		return;
 	}
 
@@ -3355,6 +3951,17 @@ void AlApiImpl::initialize_eax_symbol_map(const EaxSymbols& symbols, AlSymbolMap
 	map.reserve(sizeof(EaxSymbols) / sizeof(void*));
 	try_map_al_symbol(EaxSymbolsNames::EAXSet, ::EAXSet, symbols.EAXSet, map);
 	try_map_al_symbol(EaxSymbolsNames::EAXGet, ::EAXGet, symbols.EAXGet, map);
+}
+
+void AlApiImpl::initialize_eax(Context& context)
+{
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("Load EAX symbols.");
+	}
+
+	al_loader_->resolve_eax_symbols(context.eax_symbols);
+	initialize_eax_symbol_map(context.eax_symbols, context.eax_symbol_map);
 }
 
 MoveableMutexLock AlApiImpl::initialize_invalid_state()
@@ -3592,6 +4199,7 @@ void AlApiImpl::handle_al_source_ix(ALuint sid, ALenum param, const ALint* value
 	if (param == AL_BUFFER)
 	{
 		auto& source = get_source(sid);
+		source.is_streaming = false;
 		const auto bid = *values;
 
 		if (bid != AL_NONE)
@@ -3764,13 +4372,16 @@ void AlApiImpl::handle_monitoring_source(MonitoringContext& monitoring_context)
 		return;
 	}
 
-	auto& string_buffer_1 = *monitoring_context.string_buffer_1;
-	auto& string_buffer_2 = *monitoring_context.string_buffer_2;
-	string_buffer_1.clear();
-	string_buffer_1 += "Stuck source ";
-	string_buffer_1 += to_string(source.id, string_buffer_2);
-	string_buffer_1 += '.';
-	logger_.warning(string_buffer_1.c_str());
+	if (log_level_ >= log_level_warning)
+	{
+		auto& string_buffer_1 = *monitoring_context.string_buffer_1;
+		auto& string_buffer_2 = *monitoring_context.string_buffer_2;
+		string_buffer_1.clear();
+		string_buffer_1 += "Stuck source ";
+		string_buffer_1 += to_string(source.id, string_buffer_2);
+		string_buffer_1 += '.';
+		logger_.warning(string_buffer_1.c_str());
+	}
 
 	al_symbols_.alSourcePause(source.id);
 	al_symbols_.alSourcePlay(source.id);
@@ -3819,11 +4430,15 @@ void AlApiImpl::thread_func(ContextThread& context_thread)
 
 	{
 		const auto lock = get_lock();
-		string_buffer_1.clear();
-		string_buffer_1 += "Monitoring thread ";
-		string_buffer_1 += to_string_hex(context_thread.thread.get(), string_buffer_2);
-		string_buffer_1 += " started.";
-		logger_.info(string_buffer_1.c_str());
+
+		if (log_level_ > log_level_none)
+		{
+			string_buffer_1.clear();
+			string_buffer_1 += "Monitoring thread ";
+			string_buffer_1 += to_string_hex(context_thread.thread.get(), string_buffer_2);
+			string_buffer_1 += " started.";
+			logger_.info(string_buffer_1.c_str());
+		}
 	}
 
 	constexpr auto sleep_duration_ms = 10;
@@ -3843,11 +4458,15 @@ void AlApiImpl::thread_func(ContextThread& context_thread)
 
 			if (context_thread.quit_flag)
 			{
-				string_buffer_1.clear();
-				string_buffer_1 += "Quitting the monitoring thread ";
-				string_buffer_1 += to_string_hex(context_thread.thread.get(), string_buffer_2);
-				string_buffer_1 += '.';
-				logger_.info(string_buffer_1.c_str());
+				if (log_level_ > log_level_none)
+				{
+					string_buffer_1.clear();
+					string_buffer_1 += "Quitting the monitoring thread ";
+					string_buffer_1 += to_string_hex(context_thread.thread.get(), string_buffer_2);
+					string_buffer_1 += '.';
+					logger_.info(string_buffer_1.c_str());
+				}
+
 				break;
 			}
 

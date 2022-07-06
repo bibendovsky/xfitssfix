@@ -53,4 +53,37 @@ fs::Path get_special_folder(SpecialFolderType special_folder_type)
 	return fs::Path{u8_buffer.c_str(), static_cast<Int>(u8_buffer.size())};
 }
 
+// --------------------------------------------------------------------------
+
+String get_var(const char* name)
+{
+	const auto u16_name = encoding::to_utf16(name);
+	const auto u16_size_with_null = GetEnvironmentVariableW(reinterpret_cast<LPCWSTR>(u16_name.c_str()), nullptr, 0);
+
+	if (u16_size_with_null == 0)
+	{
+		if (GetLastError() == ERROR_ENVVAR_NOT_FOUND)
+		{
+			throw EnvException{"Variable not found."};
+		}
+
+		return String{};
+	}
+
+	auto u16_value = U16String{};
+	u16_value.resize(u16_size_with_null);
+
+	const auto u16_size_without_null = GetEnvironmentVariableW(
+		reinterpret_cast<LPCWSTR>(u16_name.c_str()),
+		reinterpret_cast<LPWSTR>(u16_value.data()),
+		u16_size_with_null);
+
+	if (u16_size_without_null != (u16_size_with_null - 1))
+	{
+		throw EnvException{"Failed to get a variable."};
+	}
+
+	return encoding::to_utf8(u16_value.c_str());
+}
+
 } // namespace xfitssfix::env

@@ -6,6 +6,7 @@
 #define XFITSSFIX_ENV_INCLUDED
 
 #include <xfitssfix/fs_path.h>
+#include <xfitssfix/string.h>
 
 namespace xfitssfix::env {
 
@@ -18,6 +19,10 @@ enum class SpecialFolderType
 // --------------------------------------------------------------------------
 
 fs::Path get_special_folder(SpecialFolderType special_folder_type);
+
+// --------------------------------------------------------------------------
+
+String get_var(const char* name);
 
 } // namespace xfitssfix::env
 
