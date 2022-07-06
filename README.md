@@ -37,6 +37,12 @@ If the working directory or the log file itself is write-protected the logger tr
 
 On Windows it's `%APPDATA%\bibendovsky\xfitssfix` (e.g., `C:\users\john\AppData\Roaming\bibendovsky\xfitssfix`).
 
+There are different levels of the logging. Set environment variable `XFITSSFIX_LOG_LEVEL` to the one of the following values:
+- 0 - disable the logging (default).
+- 1 - log errors.
+- 2 - log errors and warnings.
+- 3 - log everything.
+
 
 4 - Compiling requirements
 ==========================

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.15.7 FATAL_ERROR)
-project(xfitssfix_sys VERSION 0.9.1 LANGUAGES CXX)
+project(xfitssfix_sys VERSION 0.9.2 LANGUAGES CXX)
 
 if (NOT WIN32)
 	message(FATAL_ERROR "Unsupported platform.")
