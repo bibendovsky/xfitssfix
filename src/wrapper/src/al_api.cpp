@@ -2502,6 +2502,7 @@ try
 	}
 
 	auto& our_source = get_source(source);
+	our_source.is_streaming = true;
 	auto& queue = our_source.queue;
 	const auto is_queue_was_empty = queue.is_empty();
 
@@ -4377,16 +4378,26 @@ void AlApiImpl::handle_monitoring_source(MonitoringContext& monitoring_context)
 		auto& string_buffer_1 = *monitoring_context.string_buffer_1;
 		auto& string_buffer_2 = *monitoring_context.string_buffer_2;
 		string_buffer_1.clear();
-		string_buffer_1 += "Stuck source ";
+		string_buffer_1 += "Stuck ";
+		string_buffer_1 += (source.is_streaming ? "streaming" : "static");
+		string_buffer_1 += " source ";
 		string_buffer_1 += to_string(source.id, string_buffer_2);
 		string_buffer_1 += '.';
 		logger_.warning(string_buffer_1.c_str());
 	}
 
-	al_symbols_.alSourcePause(source.id);
-	al_symbols_.alSourcePlay(source.id);
-
-	update_source_monitoring(source);
+	if (source.is_streaming)
+	{
+		al_symbols_.alSourcePause(source.id);
+		al_symbols_.alSourcePlay(source.id);
+		update_source_monitoring(source);
+	}
+	else
+	{
+		al_symbols_.alSourceStop(source.id);
+		source.is_playing = false;
+		mark_source_as_non_monitoring(context, source);
+	}
 }
 
 void AlApiImpl::handle_monitoring_sources(MonitoringContext& monitoring_context)
