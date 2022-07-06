@@ -561,6 +561,7 @@ private:
 	SharedLibraryUPtr al_library_{};
 	AlLoaderUPtr al_loader_{};
 	AlSymbols al_symbols_{};
+	AlSymbolMap alc_symbol_map_{};
 	AlSymbolMap al_symbol_map_{};
 	Devices devices_{};
 	Context* current_context_{};
@@ -593,7 +594,8 @@ private:
 
 	void initialize_al_driver();
 	void initialize_al_symbols();
-	void initialize_al_symbol_map() noexcept;
+	void initialize_alc_symbol_map();
+	void initialize_al_symbol_map();
 	static void initialize_efx_symbol_map(const EfxSymbols& symbols, AlSymbolMap& map) noexcept;
 	void initialize_efx(Context& context);
 	void initialize_xram(Context& context);
@@ -621,9 +623,9 @@ private:
 
 	void set_al_invalid_enum();
 
-	static void* get_symbol(const AlSymbolMap& al_symbol_map, const ALchar* name) noexcept;
-
-	void* get_al_symbol(const ALchar* name) const noexcept;
+	static void* get_symbol(const AlSymbolMap& al_symbol_map, const ALchar* name);
+	void* get_alc_symbol(const ALchar* name) const;
+	void* get_al_symbol(const ALchar* name) const;
 
 	void mark_source_as_monitoring(Context& context, Source& source);
 	void mark_source_as_non_monitoring(Context& context, Source& source);
@@ -1208,19 +1210,22 @@ catch (...)
 	return AL_FALSE;
 }
 
-void* ALC_APIENTRY AlApiImpl::alcGetProcAddress(ALCdevice* device, const ALCchar* funcname) noexcept
+void* ALC_APIENTRY AlApiImpl::alcGetProcAddress(ALCdevice*, const ALCchar* funcname) noexcept
 try
 {
-	assert(funcname != nullptr);
 	const auto lock = get_lock();
-	const auto symbol = get_al_symbol(funcname);
+	const auto symbol = get_alc_symbol(funcname);
 
 	if (symbol != nullptr)
 	{
 		return symbol;
 	}
 
-	return al_symbols_.alcGetProcAddress(device, funcname);
+	string_buffer_1_.clear();
+	string_buffer_1_ += "Symbol \"";
+	string_buffer_1_ += funcname;
+	string_buffer_1_ += "\" not found.";
+	fail(string_buffer_1_.c_str());
 }
 catch (...)
 {
@@ -1627,7 +1632,6 @@ catch (...)
 void* AL_APIENTRY AlApiImpl::alGetProcAddress(const ALchar* fname) noexcept
 try
 {
-	assert(fname != nullptr);
 	const auto lock = get_lock();
 	auto symbol = get_al_symbol(fname);
 
@@ -3736,7 +3740,36 @@ void AlApiImpl::initialize_al_symbols()
 	al_loader_->resolve_al_symbols(al_symbols_);
 }
 
-void AlApiImpl::initialize_al_symbol_map() noexcept
+void AlApiImpl::initialize_alc_symbol_map()
+{
+	constexpr auto capacity = sizeof(AlSymbols) / sizeof(void*);
+
+	alc_symbol_map_.clear();
+	alc_symbol_map_.reserve(capacity);
+
+	alc_symbol_map_.emplace(AlSymbolsNames::alcCreateContext, reinterpret_cast<void*>(::alcCreateContext));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcMakeContextCurrent, reinterpret_cast<void*>(::alcMakeContextCurrent));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcProcessContext, reinterpret_cast<void*>(::alcProcessContext));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcSuspendContext, reinterpret_cast<void*>(::alcSuspendContext));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcDestroyContext, reinterpret_cast<void*>(::alcDestroyContext));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcGetCurrentContext, reinterpret_cast<void*>(::alcGetCurrentContext));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcGetContextsDevice, reinterpret_cast<void*>(::alcGetContextsDevice));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcOpenDevice, reinterpret_cast<void*>(::alcOpenDevice));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcCloseDevice, reinterpret_cast<void*>(::alcCloseDevice));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcGetError, reinterpret_cast<void*>(::alcGetError));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcIsExtensionPresent, reinterpret_cast<void*>(::alcIsExtensionPresent));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcGetProcAddress, reinterpret_cast<void*>(::alcGetProcAddress));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcGetEnumValue, reinterpret_cast<void*>(::alcGetEnumValue));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcGetString, reinterpret_cast<void*>(::alcGetString));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcGetIntegerv, reinterpret_cast<void*>(::alcGetIntegerv));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcCaptureOpenDevice, reinterpret_cast<void*>(::alcCaptureOpenDevice));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcCaptureCloseDevice, reinterpret_cast<void*>(::alcCaptureCloseDevice));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcCaptureStart, reinterpret_cast<void*>(::alcCaptureStart));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcCaptureStop, reinterpret_cast<void*>(::alcCaptureStop));
+	alc_symbol_map_.emplace(AlSymbolsNames::alcCaptureSamples, reinterpret_cast<void*>(::alcCaptureSamples));
+}
+
+void AlApiImpl::initialize_al_symbol_map()
 {
 	constexpr auto capacity = sizeof(AlSymbols) / sizeof(void*);
 
@@ -3992,6 +4025,7 @@ try
 	initialize_logger();
 	initialize_al_driver();
 	initialize_al_symbols();
+	initialize_alc_symbol_map();
 	initialize_al_symbol_map();
 	initialize_func_ = &AlApiImpl::initialize_get_lock;
 	return mt_lock;
@@ -4120,8 +4154,13 @@ void AlApiImpl::set_al_invalid_enum()
 	al_symbols_.alGetString(-1);
 }
 
-void* AlApiImpl::get_symbol(const AlSymbolMap& al_symbol_map, const ALchar* name) noexcept
+void* AlApiImpl::get_symbol(const AlSymbolMap& al_symbol_map, const ALchar* name)
 {
+	if (name == nullptr)
+	{
+		fail("Null symbol name.");
+	}
+
 	const auto name_view = std::string_view{name};
 	const auto symbol_map_it = al_symbol_map.find(name_view);
 
@@ -4133,7 +4172,12 @@ void* AlApiImpl::get_symbol(const AlSymbolMap& al_symbol_map, const ALchar* name
 	return symbol_map_it->second;
 }
 
-void* AlApiImpl::get_al_symbol(const ALchar* name) const noexcept
+void* AlApiImpl::get_alc_symbol(const ALchar* name) const
+{
+	return get_symbol(alc_symbol_map_, name);
+}
+
+void* AlApiImpl::get_al_symbol(const ALchar* name) const
 {
 	return get_symbol(al_symbol_map_, name);
 }
