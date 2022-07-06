@@ -176,13 +176,6 @@ void AL_APIENTRY alGetAuxiliaryEffectSlotiv(ALuint asid, ALenum pname, ALint* va
 void AL_APIENTRY alGetAuxiliaryEffectSlotf(ALuint asid, ALenum pname, ALfloat* value) noexcept;
 void AL_APIENTRY alGetAuxiliaryEffectSlotfv(ALuint asid, ALenum pname, ALfloat* values) noexcept;
 
-#if 0
-// X-RAM
-
-ALboolean AL_APIENTRY EAXSetBufferMode(ALsizei n, ALuint* buffers, ALint value) noexcept;
-ALenum AL_APIENTRY EAXGetBufferMode(ALuint buffer, ALint* value) noexcept;
-#endif
-
 // EAX
 
 ALenum AL_APIENTRY EAXSet(const void* psid, ALuint pid, ALuint sid, ALvoid* data, ALuint size) noexcept;
@@ -349,13 +342,6 @@ public:
 	void AL_APIENTRY alGetAuxiliaryEffectSlotiv(ALuint asid, ALenum pname, ALint* values) noexcept;
 	void AL_APIENTRY alGetAuxiliaryEffectSlotf(ALuint asid, ALenum pname, ALfloat* value) noexcept;
 	void AL_APIENTRY alGetAuxiliaryEffectSlotfv(ALuint asid, ALenum pname, ALfloat* values) noexcept;
-
-#if 0
-	// X-RAM
-
-	ALboolean AL_APIENTRY EAXSetBufferMode(ALsizei n, ALuint* buffers, ALint value) noexcept;
-	ALenum AL_APIENTRY EAXGetBufferMode(ALuint buffer, ALint* value) noexcept;
-#endif
 
 	// EAX
 
@@ -542,11 +528,7 @@ private:
 		XRamSymbols xram_symbols;
 		EaxSymbols eax_symbols;
 		AlSymbolMap efx_symbol_map;
-#if 0
-		AlSymbolMap xram_symbol_map;
-#else
 		ALenum xram_al_storage_accessible;
-#endif
 		AlSymbolMap eax_symbol_map;
 		ContextThreadUPtr context_thread;
 	};
@@ -606,11 +588,8 @@ private:
 	void initialize_al_symbols();
 	void initialize_al_symbol_map() noexcept;
 	static void initialize_efx_symbol_map(const EfxSymbols& symbols, AlSymbolMap& map) noexcept;
-#if 0
-	static void initialize_xram_symbol_map(const XRamSymbols& symbols, AlSymbolMap& map) noexcept;
-#else
-	void initialize_xram(Context& context) noexcept;
-#endif
+	void initialize_efx(Context& context);
+	void initialize_xram(Context& context);
 	static void initialize_eax_symbol_map(const EaxSymbols& symbols, AlSymbolMap& map) noexcept;
 
 	void initialize_logger();
@@ -2988,34 +2967,11 @@ try
 }
 catch (...)
 {
-	utils::log_exception(logger_, AlSymbolsNames::alGetAuxiliaryEffectSlotfv);
+	if (log_level_ >= log_level_error)
+	{
+		utils::log_exception(logger_, AlSymbolsNames::alGetAuxiliaryEffectSlotfv);
+	}
 }
-
-#if 0
-ALboolean AL_APIENTRY AlApiImpl::EAXSetBufferMode(ALsizei n, ALuint* buffers, ALint value) noexcept
-try
-{
-	const auto lock = get_lock();
-	return get_context().xram_symbols.EAXSetBufferMode(n, buffers, value);
-}
-catch (...)
-{
-	utils::log_exception(logger_, XRamSymbolsNames::EAXSetBufferMode);
-	return AL_FALSE;
-}
-
-ALenum AL_APIENTRY AlApiImpl::EAXGetBufferMode(ALuint buffer, ALint* value) noexcept
-try
-{
-	const auto lock = get_lock();
-	return get_context().xram_symbols.EAXGetBufferMode(buffer, value);
-}
-catch (...)
-{
-	utils::log_exception(logger_, XRamSymbolsNames::EAXGetBufferMode);
-	return AL_NONE;
-}
-#endif
 
 ALenum AL_APIENTRY AlApiImpl::EAXSet(const void* psid, ALuint pid, ALuint sid, ALvoid* data, ALuint size) noexcept
 try
@@ -3337,17 +3293,24 @@ void AlApiImpl::initialize_efx_symbol_map(const EfxSymbols& symbols, AlSymbolMap
 	try_map_al_symbol(EfxSymbolsNames::alGetAuxiliaryEffectSlotfv, ::alGetAuxiliaryEffectSlotfv, symbols.alGetAuxiliaryEffectSlotfv, map);
 }
 
-#if 0
-void AlApiImpl::initialize_xram_symbol_map(const XRamSymbols& symbols, AlSymbolMap& map) noexcept
+void AlApiImpl::initialize_efx(Context& context)
 {
-	map.reserve(sizeof(XRamSymbols) / sizeof(void*));
-	try_map_al_symbol(XRamSymbolsNames::EAXSetBufferMode, ::EAXSetBufferMode, symbols.EAXSetBufferMode, map);
-	try_map_al_symbol(XRamSymbolsNames::EAXGetBufferMode, ::EAXGetBufferMode, symbols.EAXGetBufferMode, map);
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("Load EFX symbols.");
+	}
+
+	al_loader_->resolve_efx_symbols(context.efx_symbols);
+	initialize_efx_symbol_map(context.efx_symbols, context.efx_symbol_map);
 }
-#else
-void AlApiImpl::initialize_xram(Context& context) noexcept
+
+void AlApiImpl::initialize_xram(Context& context)
 {
-	logger_.info("Initialize X-RAM.");
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("Initialize X-RAM.");
+	}
+
 	context.has_xram = false;
 
 	if (al_symbols_.alIsExtensionPresent("EAX-RAM") == AL_FALSE)
@@ -3380,9 +3343,12 @@ void AlApiImpl::initialize_xram(Context& context) noexcept
 	}
 
 	context.has_xram = true;
-	logger_.info("X-RAM initialized.");
+
+	if (log_level_ > log_level_none)
+	{
+		logger_.info("X-RAM initialized.");
+	}
 }
-#endif
 
 void AlApiImpl::initialize_eax_symbol_map(const EaxSymbols& symbols, AlSymbolMap& map) noexcept
 {
@@ -4561,18 +4527,6 @@ void AL_APIENTRY alGetAuxiliaryEffectSlotfv(ALuint asid, ALenum pname, ALfloat* 
 {
 	xfitssfix::g_al_api_impl.alGetAuxiliaryEffectSlotfv(asid, pname, values);
 }
-
-#if 0
-ALboolean AL_APIENTRY EAXSetBufferMode(ALsizei n, ALuint* buffers, ALint value) noexcept
-{
-	return xfitssfix::g_al_api_impl.EAXSetBufferMode(n, buffers, value);
-}
-
-ALenum AL_APIENTRY EAXGetBufferMode(ALuint buffer, ALint* value) noexcept
-{
-	return xfitssfix::g_al_api_impl.EAXGetBufferMode(buffer, value);
-}
-#endif
 
 ALenum AL_APIENTRY EAXSet(const void* psid, ALuint pid, ALuint sid, ALvoid* data, ALuint size) noexcept
 {
