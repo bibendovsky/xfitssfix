@@ -720,11 +720,6 @@ try
 {
 	const auto lock = get_lock();
 
-	if (device == nullptr)
-	{
-		fail("Tried to create a context on null device.");
-	}
-
 	if (log_level_ > log_level_none)
 	{
 		logger_.info("");
@@ -1012,7 +1007,6 @@ try
 	if (al_device == nullptr)
 	{
 		fail("AL failed to open the device.");
-		return nullptr;
 	}
 
 	const auto effective_device_name = al_symbols_.alcGetString(al_device, ALC_DEVICE_SPECIFIER);
@@ -1877,27 +1871,22 @@ try
 		logger_.info(string_buffer_1_.c_str());
 	}
 
+	al_symbols_.alGetError();
 	al_symbols_.alGenSources(n, sources);
+
+	if (al_symbols_.alGetError() != AL_NO_ERROR)
+	{
+		set_al_invalid_enum();
+		fail("AL failed to generate the sources.");
+	}
 
 	if (n <= 0 || sources == nullptr)
 	{
 		return;
 	}
 
-	const auto sources_span = make_span(sources, n);
-
-	for (const auto source : sources_span)
-	{
-		if (al_symbols_.alIsSource(source) == AL_FALSE)
-		{
-			string_buffer_1_.clear();
-			string_buffer_1_ += "Invalid source ID: ";
-			string_buffer_1_ += to_string(source, string_buffer_2_);
-			fail(string_buffer_1_.c_str());
-		}
-	}
-
 	auto& context = get_context();
+	const auto sources_span = make_span(sources, n);
 
 	for (const auto source : sources_span)
 	{
@@ -1931,24 +1920,22 @@ try
 		logger_.info(string_buffer_1_.c_str());
 	}
 
+	al_symbols_.alGetError();
 	al_symbols_.alDeleteSources(n, sources);
+
+	if (al_symbols_.alGetError() != AL_NO_ERROR)
+	{
+		set_al_invalid_enum();
+		fail("AL failed to delete the sources.");
+	}
 
 	if (n <= 0 || sources == nullptr)
 	{
 		return;
 	}
 
-	const auto sources_span = make_span(sources, n);
-
-	for (const auto source : sources_span)
-	{
-		if (source == AL_NONE || al_symbols_.alIsSource(source) == AL_TRUE)
-		{
-			fail("AL failed to delete the sources.");
-		}
-	}
-
 	auto& source_map = get_context().source_map;
+	const auto sources_span = make_span(sources, n);
 
 	for (const auto source : sources_span)
 	{
@@ -2497,7 +2484,8 @@ try
 
 	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		fail("Failed to queue the buffers.");
+		set_al_invalid_enum();
+		fail("AL failed to queue the buffers.");
 	}
 
 	if (nb <= 0 || buffers == nullptr)
@@ -2557,7 +2545,8 @@ try
 
 	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		fail("Failed to unqueue the buffers.");
+		set_al_invalid_enum();
+		fail("AL failed to unqueue the buffers.");
 	}
 
 	if (nb <= 0 || buffers == nullptr)
@@ -2596,25 +2585,20 @@ try
 	al_symbols_.alGetError();
 	al_symbols_.alGenBuffers(n, buffers);
 
+	if (al_symbols_.alGetError() != AL_NO_ERROR)
+	{
+		set_al_invalid_enum();
+		fail("AL failed to generate the buffers.");
+	}
+
 	if (n <= 0 || buffers == nullptr)
 	{
 		return;
 	}
 
-	const auto buffers_span = make_span(buffers, n);
-
-	for (const auto buffer : buffers_span)
-	{
-		if (buffer == AL_NONE || al_symbols_.alIsBuffer(buffer) == AL_FALSE)
-		{
-			string_buffer_1_.clear();
-			string_buffer_1_ += "Invalid buffer ID ";
-			string_buffer_1_ += to_string(buffer, string_buffer_2_);
-			fail(string_buffer_1_.c_str());
-		}
-	}
-
 	auto& buffer_map = get_device().buffer_map;
+
+	const auto buffers_span = make_span(buffers, n);
 
 	for (const auto buffer : buffers_span)
 	{
@@ -2632,7 +2616,10 @@ try
 
 		if (xram_result == AL_FALSE)
 		{
-			fail("Failed to set X-RAM mode to ACCESSIBLE.");
+			if (log_level_ >= log_level_warning)
+			{
+				logger_.warning("AL failed to set X-RAM mode to ACCESSIBLE.");
+			}
 		}
 	}
 }
@@ -2664,17 +2651,14 @@ try
 	al_symbols_.alGetError();
 	al_symbols_.alDeleteBuffers(n, buffers);
 
-	const auto buffers_span = make_span(buffers, n);
-
-	for (const auto buffer : buffers_span)
+	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		if (alIsBuffer(buffer) == AL_TRUE)
-		{
-			fail("AL failed to delete the buffers.");
-		}
+		set_al_invalid_enum();
+		fail("AL failed to delete the buffers.");
 	}
 
 	auto& buffer_map = get_device().buffer_map;
+	const auto buffers_span = make_span(buffers, n);
 
 	for (const auto buffer : buffers_span)
 	{
@@ -2763,7 +2747,8 @@ try
 
 	if (al_symbols_.alGetError() != AL_NO_ERROR)
 	{
-		fail("Failed to fill a buffer with data.");
+		set_al_invalid_enum();
+		fail("AL failed to fill a buffer with data.");
 	}
 
 	auto& our_buffer = get_buffer(buffer);
